@@ -134,8 +134,15 @@ uv run pipeline run aula.mp4 --from render
 ```
 
 Cada artefato carrega o hash daquilo de que foi derivado, então um estágio
-sabe sozinho se o trabalho dele já está feito. Para forçar a refazer, apague
-o artefato:
+sabe sozinho se o trabalho dele já está feito.
+
+O hash inclui o config que importa para aquele estágio: mexer em `editorial`
+invalida a EDL, e mexer em `style_suffix`, `similarity_threshold`,
+`generic_tags` ou no modelo do provider invalida os assets. Ou seja, calibrar
+funciona — você edita o `config.yaml`, roda de novo, e o estágio afetado
+refaz o trabalho sozinho sem refazer a transcrição.
+
+Para forçar a refazer mesmo sem mudar o config, apague o artefato:
 
 ```bash
 rm work/aula-a1b2c3d4/edl.json && uv run pipeline plan aula-a1b2c3d4

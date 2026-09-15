@@ -9,7 +9,7 @@ from ..log import log, stage
 from ..providers import PexelsStock, build_provider
 from ..resolver import AssetResolver, BudgetExceeded
 from ..schemas import EDL, Assets, Manifest
-from ..util import read_json_if_fresh, write_json
+from ..util import read_json_if_fresh, text_hash, write_json
 
 
 def open_bank(config: Config) -> AssetBank:
@@ -55,11 +55,30 @@ def build_resolver(config: Config, bank: AssetBank, *, dry_run: bool) -> AssetRe
     )
 
 
+def cache_key(edl: EDL, config: Config) -> str:
+    """Identidade dos assets: a EDL MAIS tudo que decide qual imagem sai dela.
+
+    `style_suffix` esta aqui porque o README manda calibra-lo — e sem ele na
+    chave, mexer no campo mais importante do config nao regera nada.
+    `similarity_threshold` e `generic_tags` mudam a rota de cada segmento
+    (banco / stock / geracao), e o modelo do provider muda a imagem.
+    """
+    return text_hash(
+        edl.digest(),
+        config.style_suffix,
+        config.bank.similarity_threshold,
+        ",".join(sorted(config.stock.generic_tags)),
+        config.image_provider.active,
+        config.image_provider.replicate.model,
+    )
+
+
 def run(manifest: Manifest, edl: EDL, config: Config, *, dry_run: bool = False) -> Assets:
     work = config.work_dir / manifest.slug
     assets_path = work / ("assets.dryrun.json" if dry_run else "assets.json")
+    key = cache_key(edl, config)
 
-    cached = read_json_if_fresh(assets_path, Assets, edl.digest())
+    cached = read_json_if_fresh(assets_path, Assets, key)
     if cached is not None and cached.dry_run == dry_run:
         log("assets.cached", slug=manifest.slug, cost=f"${cached.total_cost_usd:.2f}")
         return cached
@@ -73,7 +92,7 @@ def run(manifest: Manifest, edl: EDL, config: Config, *, dry_run: bool = False) 
             except BudgetExceeded as exc:
                 print_estimate(exc.estimate, config)
                 raise
-            assets.input_hash = edl.digest()
+            assets.input_hash = key
             write_json(assets_path, assets)
             log("assets.ok", cost=f"${assets.total_cost_usd:.4f}", **assets.by_origin)
             return assets
