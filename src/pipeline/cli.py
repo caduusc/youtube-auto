@@ -17,7 +17,7 @@ from . import stages
 from .config import Config, load_config
 from .log import log
 from .resolver import BudgetExceeded
-from .schemas import EDL, Assets, Manifest, Transcript
+from .schemas import EDL, Assets, Manifest, Transcript, TrimPlan
 from .stages.assets import open_bank
 from .util import read_json
 
@@ -42,6 +42,9 @@ def load(slug: str, config: Config, what: str):
     table = {
         "manifest": ("manifest.json", Manifest, "ingest"),
         "transcript": ("transcript.json", Transcript, "transcribe"),
+        # O estagio 3 em diante trabalha na timeline cortada.
+        "trimmed": ("transcript.trimmed.json", Transcript, "trim"),
+        "trim": ("trim.json", TrimPlan, "trim"),
         "edl": ("edl.json", EDL, "plan"),
         "assets": ("assets.json", Assets, "assets"),
     }
@@ -82,23 +85,36 @@ def cmd_run(args, config: Config) -> int:
 
     slug = manifest.slug
 
-    transcript = stages.transcribe.run(manifest, config) if from_index <= 1 else load(slug, config, "transcript")
-    edl = stages.plan.run(manifest, transcript, config) if from_index <= 2 else load(slug, config, "edl")
+    transcript = (
+        stages.transcribe.run(manifest, config) if from_index <= 1
+        else load(slug, config, "transcript")
+    )
+
+    if from_index <= 2:
+        trim_plan, trimmed = stages.trim.run(manifest, transcript, config)
+    else:
+        trim_plan, trimmed = load(slug, config, "trim"), load(slug, config, "trimmed")
+
+    edl = (
+        stages.plan.run(manifest, trimmed, config) if from_index <= 3
+        else load(slug, config, "edl")
+    )
 
     try:
         assets = (
             stages.assets.run(manifest, edl, config, dry_run=args.dry_run)
-            if from_index <= 3
+            if from_index <= 4
             else load(slug, config, "assets")
         )
     except BudgetExceeded:
         return 2
 
     if args.dry_run:
+        print(stages.trim.render_text(trim_plan))
         print_dry_run(edl, assets, config)
         return 0
 
-    output = stages.render.run(manifest, transcript, edl, assets, config)
+    output = stages.render.run(manifest, trimmed, edl, assets, config, trim_plan)
     stages.report.run(manifest, edl, assets, output, config)
     return 0
 
@@ -148,8 +164,12 @@ def cmd_stage(name: str, slug: str, config: Config) -> int:
         stages.ingest.run(Path(manifest.source_path), config)
     elif name == "transcribe":
         stages.transcribe.run(load(slug, config, "manifest"), config)
+    elif name == "trim":
+        _, plan = stages.trim.run(
+            load(slug, config, "manifest"), load(slug, config, "transcript"), config)
+        print(stages.trim.render_text(load(slug, config, "trim")))
     elif name == "plan":
-        stages.plan.run(load(slug, config, "manifest"), load(slug, config, "transcript"), config)
+        stages.plan.run(load(slug, config, "manifest"), load(slug, config, "trimmed"), config)
     elif name == "assets":
         try:
             stages.assets.run(load(slug, config, "manifest"), load(slug, config, "edl"), config)
@@ -157,8 +177,9 @@ def cmd_stage(name: str, slug: str, config: Config) -> int:
             return 2
     elif name == "render":
         stages.render.run(
-            load(slug, config, "manifest"), load(slug, config, "transcript"),
+            load(slug, config, "manifest"), load(slug, config, "trimmed"),
             load(slug, config, "edl"), load(slug, config, "assets"), config,
+            load(slug, config, "trim"),
         )
     elif name == "report":
         manifest = load(slug, config, "manifest")

@@ -17,9 +17,12 @@ from pathlib import Path
 
 from ..config import Config
 from ..ffmpeg import run as ffmpeg
-from ..filtergraph import Chunk, Overlay, build_graph, build_inputs, frame_align, plan_chunks, prep_size
+from ..filtergraph import (
+    Chunk, Overlay, audio_trim_chain, build_graph, build_inputs,
+    frame_align, plan_chunks, prep_size,
+)
 from ..log import log, stage
-from ..schemas import EDL, Assets, Manifest, Transcript
+from ..schemas import EDL, Assets, Manifest, Transcript, TrimPlan
 from ..subtitles import write_ass
 from ..util import text_hash
 
@@ -117,23 +120,50 @@ def render_chunk(
     return target
 
 
-def mux(video: Path, source: Path, output: Path, config: Config) -> None:
-    """Junta a trilha de video montada com o audio original.
+def build_audio(
+    plan: TrimPlan | None, source: Path, work: Path, config: Config
+) -> tuple[Path, str]:
+    """A trilha de audio da saida. Devolve (arquivo, codec para o mux).
 
-    `-c:a copy` e o ponto do pipeline inteiro: a trilha de audio que sai e
-    byte a byte a que entrou.
+    Sem corte, o audio nao e tocado: sai do arquivo original por stream copy
+    no mux, byte a byte igual ao que entrou.
+
+    Com corte, ele e cortado nos MESMOS instantes do video — o que preserva a
+    sincronia labial — e encodado exatamente uma vez, num passe proprio que
+    nao decodifica video. O invariante deixa de ser "nunca tocado" e passa a
+    ser "cortado nos pontos escolhidos e nunca processado de outra forma":
+    sem normalizacao, sem compressao, sem filtro.
     """
+    if plan is None or not plan.enabled or len(plan.keep) <= 1:
+        return source, "copy"
+
+    target = work / "audio.m4a"
+    keep = [(r.start, r.end) for r in plan.keep]
     ffmpeg([
-        "-i", str(video), "-i", str(source),
+        "-i", str(source), "-vn",
+        "-filter_complex", audio_trim_chain(keep),
+        "-map", "[aout]",
+        "-c:a", "aac", "-b:a", str(config.render.audio_bitrate_kbps) + "k",
+        str(target),
+    ], label=f"cortar audio ({len(keep)} trechos)")
+    log("render.audio", trechos=len(keep), bitrate=f"{config.render.audio_bitrate_kbps}k")
+    return target, "copy"
+
+
+def mux(video: Path, audio: Path, output: Path, codec: str) -> None:
+    """Junta a trilha de video montada com a de audio."""
+    ffmpeg([
+        "-i", str(video), "-i", str(audio),
         "-map", "0:v:0", "-map", "1:a:0",
-        "-c:v", "copy", "-c:a", "copy",
+        "-c:v", "copy", "-c:a", codec,
         "-movflags", "+faststart", "-shortest",
         str(output),
-    ], label="mux audio original")
+    ], label="mux audio")
 
 
 def run(
-    manifest: Manifest, transcript: Transcript, edl: EDL, assets: Assets, config: Config
+    manifest: Manifest, transcript: Transcript, edl: EDL, assets: Assets,
+    config: Config, plan: TrimPlan | None = None,
 ) -> Path:
     work = config.work_dir / manifest.slug
     output = work / "final.mp4"
@@ -155,9 +185,17 @@ def run(
         prepared = prepare_images(assets, config, work)
         overlays = build_overlays(edl, prepared, config)
         duration = frame_align(edl.duration, config.render.fps)
-        chunks = plan_chunks(overlays, duration, config.render)
+
+        window = None
+        if plan is not None and plan.enabled and len(plan.keep) > 1:
+            def window(first: float, last: float):
+                start = plan.original_time(first)
+                return start, plan.original_time(last) - start, plan.keep_within(first, last)
+
+        chunks = plan_chunks(overlays, duration, config.render, window)
 
         log("render.plan", chunks=len(chunks), overlays=len(overlays),
+            cortes=sum(len(c.keep) for c in chunks) if window else 0,
             mode="passe unico" if len(chunks) == 1 else "chunks + concat")
 
         rendered = [render_chunk(chunk, source, transcript, config, work) for chunk in chunks]
@@ -175,6 +213,7 @@ def run(
                 "-c", "copy", str(video),
             ], label="concat dos chunks")
 
-        mux(video, source, output, config)
+        audio, audio_codec = build_audio(plan, source, work, config)
+        mux(video, audio, output, audio_codec)
         log("render.ok", output=str(output))
         return output

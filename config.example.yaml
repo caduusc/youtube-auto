@@ -63,6 +63,26 @@ editorial:
   concept_tags_min: 2
   concept_tags_max: 4
 
+# Corte seco de trecho morto: pausa longa e hesitacao.
+#
+# A lista de `fillers` NAO e aplicada por texto puro. Em portugues "e" e a 3a
+# pessoa de "ser" e "um" e artigo: cortar por token destruiria frases. Todo
+# candidato precisa passar tambem pela duracao minima E pelo silencio dos DOIS
+# lados. Exigir os dois lados, em vez de um, e o que protege a pausa retorica:
+# em "o problema e... que ninguem olha", a pausa depois do verbo bastaria para
+# marcar como hesitacao se um lado fosse suficiente.
+#
+# Os cortes sao listados com o texto ao redor no `--dry-run` e em trim.json,
+# para voce revisar antes de renderizar.
+trim:
+  enabled: true
+  pause_min_seconds: 0.8        # 1.2 e conservador, 0.5 e agressivo
+  filler_min_seconds: 0.40
+  filler_silence_seconds: 0.25
+  keep_margin_seconds: 0.12     # sobra em cada ponta, para a emenda nao soar rente
+  min_keep_seconds: 0.35        # trecho menor que isso seria um estalo
+  fillers: [e, eh, ehh, ah, ahn, ahm, a, hm, hmm, hum, uhm, um, mm, mmm, uh]
+
 transcribe:
   model: small          # tiny | base | small | medium | large-v3
   device: cpu
@@ -221,7 +241,9 @@ render:
     canvas_scale: 2
 
 subtitles:
-  enabled: true
+  # Desligada: o video final nao leva legenda queimada. Ponha `true` se
+  # quiser, que o resto do estilo abaixo ja esta calibrado.
+  enabled: false
   font_name: Inter
   font_size: 54
   primary_color: "&H00FFFFFF"    # ASS usa &HAABBGGRR
