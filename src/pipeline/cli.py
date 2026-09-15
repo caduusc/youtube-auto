@@ -124,6 +124,16 @@ def print_dry_run(edl: EDL, assets: Assets, config: Config) -> None:
     from .stages.assets import print_estimate
 
     print()
+    if edl.brief is not None:
+        b = edl.brief
+        print("  Briefing visual")
+        print("  " + "-" * 72)
+        print(f"  assunto:    {b.subject}")
+        print(f"  argumento:  {b.argument}")
+        print(f"  espectador: {b.audience_takeaway}")
+        print(f"  vocabulario: {', '.join(b.visual_vocabulary)}")
+        print(f"  evitar:      {', '.join(b.avoid)}")
+        print()
     print("  EDL")
     print("  " + "-" * 72)
     by_index = {item.segment_index: item for item in assets.items}

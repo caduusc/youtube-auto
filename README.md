@@ -10,10 +10,11 @@ no estágio 5, rodar de novo retoma do 5 sem refazer transcrição nem regerar
 imagem.
 
 ```
-ingest ──> transcribe ──> plan ──> assets ──> render ──> report
-  │             │           │         │          │          │
-manifest    transcript     edl     assets    final.mp4   report
- .json        .json       .json     .json                 .json
+ingest ─> transcribe ─> trim ─> plan ─> assets ─> render ─> report
+   │           │          │       │        │         │         │
+manifest  transcript    trim     edl    assets   final.mp4  report
+  .json      .json      .json   .json    .json               .json
+                          └─ transcript.trimmed.json
 ```
 
 ## Setup
@@ -286,6 +287,52 @@ validada por tolerância sobre tempos. Em vez disso, o modelo devolve faixas
 de **índice de segmento do transcript**, e o pipeline deriva os tempos. A
 fronteira passa a ser, por construção, fronteira de segmento: cortar no meio
 de uma frase deixa de ser representável.
+
+### O corte seco e a regra que mais importa é negativa
+
+O estágio `trim` remove pausa longa e hesitação. Em português, vários sons de
+hesitação são palavras de conteúdo: **"é" é a 3ª pessoa de "ser"** e "um" é
+artigo. Cortar por token destruiria frases.
+
+Todo candidato passa por três testes ao mesmo tempo: estar na lista de
+`fillers`, durar acima do mínimo, e ter silêncio dos **dois** lados. Exigir os
+dois lados em vez de um é o que protege a pausa retórica — em *"o problema
+é... que ninguém olha"*, a pausa depois do verbo bastaria para marcá-lo como
+hesitação se um lado fosse suficiente.
+
+Os cortes são listados com o texto ao redor no `--dry-run` e em `trim.json`.
+Sem isso o corte é caixa preta: você vê 12% de redução e não tem como saber
+se uma pausa que dava peso a uma frase foi embora.
+
+**O alinhamento a frame não é cosmético.** `atrim` corta áudio por amostra e
+`trim` corta vídeo por frame: em tempo arbitrário, cada corte deixa até um
+frame de diferença entre as trilhas. Medido com 20 cortes não alinhados: 24ms
+de dessincronia acumulada. Com os trechos alinhados ao grid: zero.
+
+Com corte, o áudio deixa de ser byte a byte igual — ele é cortado nos mesmos
+instantes do vídeo, o que preserva a sincronia labial, e encodado uma vez. O
+invariante passa a ser "cortado nos pontos escolhidos e nunca processado de
+outra forma": sem normalização, sem compressão, sem filtro. Com
+`trim.enabled: false`, volta ao stream copy.
+
+### O planejamento tem duas fases
+
+A fase 1 lê a transcrição inteira e devolve um briefing visual: assunto,
+argumento, vocabulário visual e clichês a evitar. A fase 2 monta a EDL
+escolhendo dentro daquele vocabulário.
+
+Existe porque as duas tarefas competiam na mesma resposta. Pedir na mesma
+chamada "segmente a timeline" e "invente as imagens" fazia a segunda sofrer:
+saíam cenas plausíveis para um vídeo de criador genericamente, não para
+*este* vídeo.
+
+O briefing define o **vocabulário**; cada `concept` continua ancorado ao
+próprio trecho. Uma imagem que ilustra o tema geral mas não o que está sendo
+dito naquele momento é pior que uma imagem genérica — o espectador sente o
+descolamento entre o que ouve e o que vê.
+
+Custa uma chamada a mais por vídeo, uns US$ 0,05. `anthropic.two_phase:
+false` volta ao passe único.
 
 ### As regras editoriais interagem de um jeito que não é óbvio
 

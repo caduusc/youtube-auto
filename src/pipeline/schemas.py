@@ -162,6 +162,34 @@ class TrimPlan(BaseModel):
 # --------------------------------------------------------------------------
 
 
+class Brief(BaseModel):
+    """Fase 1 do planejamento: o que o video e, antes de decidir cortes.
+
+    Existe porque as duas tarefas competiam na mesma resposta. Pedir na mesma
+    chamada "segmente a timeline" e "invente as imagens" fazia a segunda
+    sofrer: saiam cenas plausiveis para um video de criador genericamente, nao
+    para ESTE video.
+
+    O briefing define o vocabulario visual; cada `concept` continua ancorado
+    ao proprio trecho. Uma imagem que ilustra o tema geral mas nao o que esta
+    sendo dito naquele momento e pior que uma imagem generica — o espectador
+    sente o descolamento.
+    """
+
+    subject: str = Field(description="do que o video trata, em uma frase")
+    argument: str = Field(description="o argumento central que ele defende, em uma frase")
+    audience_takeaway: str = Field(description="o que o espectador leva embora")
+    visual_vocabulary: list[str] = Field(
+        description="6 a 10 elementos visuais concretos em ingles (objetos, "
+                    "ambientes, materiais, tipo de luz) que atravessam o video "
+                    "inteiro e dao unidade as imagens"
+    )
+    avoid: list[str] = Field(
+        description="2 a 5 clices visuais em ingles a evitar neste video "
+                    "especifico, por serem obvios ou nao dizerem nada"
+    )
+
+
 class PlannedSpan(BaseModel):
     """Uma faixa como o modelo a devolve.
 
@@ -219,6 +247,7 @@ class EDL(BaseModel):
     input_hash: str          # digest do transcript
     model: str
     attempts: int
+    brief: Brief | None = None
     duration: float
     segments: list[EDLSegment]
     stats: EDLStats

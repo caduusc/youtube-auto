@@ -16,6 +16,9 @@ class AnthropicConfig(BaseModel):
     max_tokens: int = 16000
     timeout_seconds: float = 900.0
     max_attempts: int = 3
+    # Fase 1 do planejamento: uma chamada a mais que le a transcricao inteira
+    # e devolve o briefing visual do video, antes de a fase 2 decidir cortes.
+    two_phase: bool = True
 
 
 class EditorialConfig(BaseModel):

@@ -16,7 +16,12 @@ def cache_key(transcript: Transcript, config: Config) -> str:
     EDL antiga em silencio — exatamente no fluxo de calibragem em que se
     mexe nas regras justamente para obter uma EDL diferente.
     """
-    return text_hash(transcript.digest(), config.editorial.model_dump_json())
+    return text_hash(
+        transcript.digest(),
+        config.editorial.model_dump_json(),
+        # O briefing muda os concepts, entao liga-lo ou desliga-lo invalida a EDL.
+        str(config.anthropic.two_phase),
+    )
 
 
 def run(manifest: Manifest, transcript: Transcript, config: Config) -> EDL:
@@ -30,7 +35,8 @@ def run(manifest: Manifest, transcript: Transcript, config: Config) -> EDL:
         return cached
 
     with stage("plan", model=config.anthropic.model, segments=len(transcript.segments)):
-        edl = call_model(transcript, config=config.anthropic, rules=config.editorial)
+        edl = call_model(transcript, config=config.anthropic, rules=config.editorial,
+                         two_phase=config.anthropic.two_phase)
         edl.input_hash = key
         write_json(edl_path, edl)
         return edl

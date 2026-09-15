@@ -35,6 +35,18 @@ anthropic:
   max_tokens: 16000
   timeout_seconds: 900  # Opus com thinking adaptativo pensa um bom tempo
   max_attempts: 3       # tentativas de EDL valida antes de desistir
+  # Planejamento em duas fases. A fase 1 le a transcricao inteira e devolve o
+  # briefing visual do video (assunto, argumento, vocabulario visual, clices a
+  # evitar); a fase 2 monta a EDL escolhendo dentro daquele vocabulario.
+  #
+  # Existe porque as duas tarefas competiam na mesma resposta: pedir na mesma
+  # chamada "segmente a timeline" e "invente as imagens" fazia a segunda
+  # sofrer, e saiam cenas plausiveis para um video de criador genericamente,
+  # nao para ESTE video.
+  #
+  # Custa uma chamada a mais por video, uns USD 0.05. `false` volta ao passe
+  # unico.
+  two_phase: true
 
 # Regras editoriais. Alimentam tanto o system prompt do estagio 3 quanto o
 # validador — as duas pontas leem daqui, entao nao podem divergir.
