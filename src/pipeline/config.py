@@ -46,14 +46,19 @@ class TrimConfig(BaseModel):
 
     A lista de `fillers` NAO e aplicada por texto puro. "e" e a 3a pessoa de
     "ser" e "um" e artigo: cortar por token destruiria frases inteiras. Todo
-    candidato precisa passar tambem pela duracao minima E pelo silencio ao
-    redor, que e o que distingue hesitacao de palavra em fala corrida.
+    candidato precisa passar tambem pelo silencio ANTES do som e pela duracao
+    — ver o docstring de `trim.py` para por que o silencio e medido de um
+    lado so, e o que a duracao e comparada contra.
     """
 
     enabled: bool = True
     pause_min_seconds: float = 0.8
     filler_min_seconds: float = 0.40
     filler_silence_seconds: float = 0.25
+    # Quantas vezes a mediana daquele token na propria fala. E o que separa
+    # verbo abrindo frase de hesitacao alongada, sem depender de um numero
+    # absoluto que muda com o ritmo de quem gravou.
+    filler_stretch_ratio: float = 2.0
     # Deixado em cada ponta do corte, para a emenda nao soar cortada rente.
     keep_margin_seconds: float = 0.12
     # Trecho mantido menor que isso e absorvido em vez de virar fragmento.
