@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from ..bank import AssetBank
 from ..config import Config
-from ..embed import SentenceTransformerEmbedder
+from ..embed import SentenceTransformerEmbedder, resolve_model
 from ..log import log, stage
 from ..providers import PexelsStock, build_provider
 from ..resolver import AssetResolver, BudgetExceeded
@@ -13,11 +13,12 @@ from ..util import read_json_if_fresh, text_hash, write_json
 
 
 def open_bank(config: Config) -> AssetBank:
+    identity, load_path = resolve_model(config.bank.embedding_model, config.root)
     return AssetBank(
         root=config.root,
         db_path=config.path(config.bank.db_path),
         images_dir=config.path(config.bank.images_dir),
-        embedder=SentenceTransformerEmbedder(config.bank.embedding_model),
+        embedder=SentenceTransformerEmbedder(identity, load_path),
         threshold=config.bank.similarity_threshold,
     )
 

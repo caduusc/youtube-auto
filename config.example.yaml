@@ -90,8 +90,14 @@ bank:
   # ser reusados e o `bank stats` mostra as duas familias.
   #
   # Aceita tambem o caminho de uma pasta local, se a sua rede nao consegue
-  # baixar do HuggingFace: baixe o repositorio do modelo por fora e aponte
-  # para ele, por exemplo `models/all-MiniLM-L6-v2`.
+  # baixar do HuggingFace: baixe os arquivos do modelo por fora e aponte para
+  # a pasta, por exemplo `models/all-MiniLM-L6-v2`. O caminho e resolvido
+  # contra a raiz do projeto (onde esta o config), nao contra o diretorio de
+  # onde voce chamou o comando.
+  #
+  # Pasta existente vence o ID do Hub com o mesmo nome. A identidade gravada
+  # no banco continua sendo este valor do config, nao o caminho absoluto,
+  # para o banco nao invalidar se voce mover o projeto.
   embedding_model: sentence-transformers/all-MiniLM-L6-v2
   # Similaridade de cosseno minima para reusar uma imagem do banco.
   # 0.82 e conservador. Abaixo de ~0.75 comeca a reusar imagem que nao

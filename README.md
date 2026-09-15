@@ -56,8 +56,21 @@ ordem de eficácia:
    é a causa mais comum;
 3. `hf download <modelo>` repetido até completar, já que cada tentativa retoma
    de onde parou;
-4. baixar o repositório do modelo pelo navegador e apontar
-   `bank.embedding_model` para a pasta local — o campo aceita caminho.
+4. baixar os arquivos do modelo pelo navegador e apontar
+   `bank.embedding_model` para a pasta local — o campo aceita caminho,
+   resolvido contra a raiz do projeto.
+
+Para o item 4 com `all-MiniLM-L6-v2`, são 10 arquivos (~91MB): `config.json`,
+`config_sentence_transformers.json`, `modules.json`, `sentence_bert_config.json`,
+`special_tokens_map.json`, `model.safetensors`, `tokenizer.json`,
+`tokenizer_config.json`, `vocab.txt` e `1_Pooling/config.json`. **Não** baixe
+`pytorch_model.bin` nem `rust_model.ot` — são os mesmos pesos em outros
+formatos. Verifique a pasta antes de rodar o pipeline:
+
+```bash
+uv run python -c "from sentence_transformers import SentenceTransformer; \
+  print(SentenceTransformer('models/all-MiniLM-L6-v2').encode('teste')[:4])"
+```
 
 O estágio 4 distingue os dois modos de falha e imprime essa lista quando o
 erro é de TLS.
