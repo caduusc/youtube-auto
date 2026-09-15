@@ -108,6 +108,11 @@ budget:
 
 # Provider de imagem. `active` escolhe a implementacao; as demais ficam
 # inertes. Trocar de provider e trocar esta linha.
+#
+# `active: none` desliga a geracao: o pipeline usa so o banco e o stock
+# gratuito, e o que nenhum dos dois resolver recebe o fallback de cor solida.
+# E a configuracao para rodar sem conta de geracao — custo zero de imagem, ao
+# preco de nao poder ilustrar conceito especifico.
 image_provider:
   active: replicate
   replicate:

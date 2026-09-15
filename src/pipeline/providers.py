@@ -61,14 +61,39 @@ class ReplicateProvider:
         return {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"}
 
     def generate(self, prompt: str, destination: Path) -> float:
-        prediction = with_retries(
-            lambda: self._create(prompt), label=f"replicate {self.config.model}"
-        )
+        try:
+            prediction = with_retries(
+                lambda: self._create(prompt), label=f"replicate {self.config.model}"
+            )
+        except RuntimeError as exc:
+            cause = exc.__cause__
+            if isinstance(cause, requests.HTTPError):
+                explained = self._explain_http_error(cause)
+                if explained:
+                    raise RuntimeError(explained) from cause
+            raise
         url = self._await_output(prediction)
         _download(url, destination, timeout=self.config.timeout_seconds)
         log("provider.generated", model=self.config.model, file=destination.name,
             cost=f"${self.cost_usd_per_image:.4f}")
         return self.cost_usd_per_image
+
+    @staticmethod
+    def _explain_http_error(exc: requests.HTTPError) -> str | None:
+        """Erro de conta nao e problema de rede; retentar nao ajuda."""
+        status = getattr(exc.response, "status_code", None)
+        if status in (401, 403):
+            return (
+                "o Replicate recusou a credencial (HTTP {}). Confira o valor de "
+                "REPLICATE_API_TOKEN.".format(status)
+            )
+        if status == 402:
+            return (
+                "o Replicate respondeu HTTP 402 (sem credito). Adicione credito "
+                "na conta, ou rode com `image_provider.active: none` no config "
+                "para usar so banco e stock, com cor solida no que sobrar."
+            )
+        return None
 
     def _create(self, prompt: str) -> dict:
         response = requests.post(
@@ -113,11 +138,20 @@ class ReplicateProvider:
         return output
 
 
-def build_provider(active: str, config) -> ImageProvider:
+def build_provider(active: str, config) -> ImageProvider | None:
+    """Constroi o provider, ou None quando geracao esta desligada.
+
+    `active: none` nao e um erro: e a escolha de rodar so com banco e stock,
+    sem conta de geracao. Os segmentos que nenhum dos dois resolve caem no
+    fallback de cor solida em vez de derrubar o estagio.
+    """
+    if active in {"none", "off", "disabled"}:
+        return None
     if active == "replicate":
         return ReplicateProvider(config.replicate)
     raise RuntimeError(
-        f"image_provider.active='{active}' nao tem implementacao; use 'replicate'"
+        f"image_provider.active='{active}' nao tem implementacao; "
+        "use 'replicate' ou 'none'"
     )
 
 

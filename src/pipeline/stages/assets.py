@@ -29,6 +29,10 @@ def build_resolver(config: Config, bank: AssetBank, *, dry_run: bool) -> AssetRe
 
     try:
         provider = build_provider(config.image_provider.active, config.image_provider)
+        if provider is None:
+            log("assets.no_provider",
+                detail="geracao desligada no config; so banco e stock, "
+                       "cor solida no que sobrar")
     except RuntimeError as exc:
         if not dry_run:
             raise

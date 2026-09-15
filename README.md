@@ -79,7 +79,7 @@ de onde cada chave é lida.
 | Variável | Para quê | Sem ela |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | estágio 3, planejamento editorial | o pipeline não roda |
-| `REPLICATE_API_TOKEN` | estágio 4, geração de imagem | `--dry-run` funciona; o run real falha |
+| `REPLICATE_API_TOKEN` | estágio 4, geração de imagem | `--dry-run` funciona; o run real falha, a menos que você ponha `image_provider.active: none` |
 | `PEXELS_API_KEY` | estágio 4, stock gratuito | tudo que seria stock vai para geração, e a conta sobe |
 
 ```bash
@@ -136,6 +136,21 @@ graça pelo banco.
 ```bash
 uv run pipeline bank prune --unused-days 90
 ```
+
+## Rodando sem conta de geração
+
+Se você não tem crédito no Replicate, `image_provider.active: none` no config
+faz o pipeline usar só o banco e o stock gratuito. O que nenhum dos dois
+resolver recebe o fallback de cor sólida, e o vídeo sai — custo de imagem
+zero.
+
+O limite é real: stock só cobre cena genérica. Um `concept` específico
+("a chessboard mid-game beside a window") não existe em banco de fotos, e
+aquele segmento vira um retângulo de cor. Serve para validar o pipeline
+inteiro e para vídeo cujo b-roll é todo genérico; não substitui geração.
+
+Ampliar `stock.generic_tags` é o que aumenta a cobertura nesse modo: cada tag
+que casa é um segmento que sai do Pexels em vez de virar cor sólida.
 
 ## Orçamento
 
