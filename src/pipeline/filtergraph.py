@@ -149,7 +149,7 @@ def _zoompan_chain(overlay, cfg: RenderConfig, z0: float, z1: float,
     frames = max(1, int(round(overlay.duration * cfg.fps)))
     zoom = f"{z0:.6f}+({z1 - z0:.6f})*on/{frames}"
     return (
-        f"select='eq(n\,0)',"
+        f"select='eq(n\\,0)',"
         f"zoompan=z='{zoom}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
         f":d={frames}:s={cfg.width}x{cfg.height}:fps={cfg.fps:g}"
     )
