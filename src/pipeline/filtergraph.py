@@ -113,6 +113,32 @@ def _zoom_and_pan(direction: str, cfg: RenderConfig) -> tuple[float, float, str,
     raise ValueError(f"direcao de ken burns desconhecida: {direction!r}")
 
 
+def fade_for(duration: float, cfg: RenderConfig) -> float:
+    """Duracao do fade deste segmento. Encolhe junto com segmento curto.
+
+    Os dois fades vivem dentro do proprio segmento — entrada em 0, saida
+    terminando no fim — entao com fade fixo F o tempo em opacidade cheia e
+    D - 2F, e abaixo de D = 2F os dois fades se sobrepoem e a imagem nunca
+    chega a aparecer. Medido renderizando e lendo o brilho frame a frame,
+    com imagem branca sobre base escura (base Y~55, branco cheio Y~234):
+
+        D      fade fixo 0.4s              fade proporcional
+        0.6s   pico Y=155, 0ms na tela     pico 234, 333ms
+        0.8s   pico 234, 167ms             pico 234, 500ms
+        1.2s   pico 234, 567ms             pico 234, 700ms
+
+    Em 0.6s a imagem literalmente nao existe na tela: o pico fica em 2/3 do
+    caminho e volta. Em 0.8s (exatamente 2F) ela toca o cheio num instante e
+    ja sai — visualmente um piscar.
+
+    `max_fade_ratio` poe um teto em F/D, garantindo metade do segmento em
+    opacidade cheia qualquer que seja a duracao. Nao e clamp defensivo: e o
+    que torna b-roll curto representavel, e sem ele `broll_min_seconds` teria
+    um piso implicito de 2x o crossfade que nada no config revelaria.
+    """
+    return min(cfg.crossfade_seconds, max(0.0, duration) * cfg.max_fade_ratio)
+
+
 def ken_burns_chain(overlay: Overlay, cfg: RenderConfig) -> str:
     """Filtros de Ken Burns para uma imagem, sem os labels de entrada/saida."""
     canvas_w = cfg.width * cfg.ken_burns.canvas_scale
@@ -228,7 +254,6 @@ def build_graph(
         f"fps={cfg.fps:g},format=yuv420p[base0]"
     )
 
-    fade = cfg.crossfade_seconds
     current = "base0"
 
     for position, overlay in enumerate(chunk.overlays, start=1):
@@ -238,6 +263,7 @@ def build_graph(
         else:
             visual = ken_burns_chain(overlay, cfg)
 
+        fade = fade_for(overlay.duration, cfg)
         fade_out_at = max(0.0, overlay.duration - fade)
         parts.append(
             f"[{position}:v]{visual},setsar=1,format=yuva420p,"

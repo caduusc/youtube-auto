@@ -224,6 +224,17 @@ def cmd_bank(args, config: Config) -> int:
                 print("  imagens de OUTRO modelo (nao serao reusadas):")
                 for model, count in sorted(outros.items()):
                     print(f"    {model:<34} {count:>6}")
+            # Mesmo aviso do modelo, pela mesma razao: imagem que nao pode
+            # ser reusada continua ocupando disco, e sem isso o `stats` diria
+            # que o banco tem 40 imagens quando so 6 servem.
+            estilos = {s: n for s, n in stats["by_style"].items() if s != stats["active_style"]}
+            if estilos:
+                print("  " + "-" * 52)
+                print(f"  estilo ativo: {stats['active_style'] or '(nenhum)'}")
+                print("  geradas em OUTRO estilo (nao serao reusadas):")
+                for style, count in sorted(estilos.items()):
+                    rotulo = "? (antes da coluna de estilo)" if style == "?" else style
+                    print(f"    {rotulo:<34} {count:>6}")
             print(f"  usos totais                {stats['total_uses']:>6}")
             print(f"  usos por imagem            {stats['avg_uses_per_asset']:>6.2f}")
             print("  " + "-" * 52)

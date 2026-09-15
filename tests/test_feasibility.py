@@ -198,3 +198,37 @@ def test_uma_troca_a_mais_ainda_e_rejeitada(rules):
     ]
     errors = validate(segs(t, layout), t, rules)
     assert any("por minuto no video inteiro" in e for e in errors), errors
+
+
+# --------------------------------------------------------------------------
+# o config de exemplo em si
+# --------------------------------------------------------------------------
+
+
+def test_config_de_exemplo_e_viavel(example_config):
+    """A suite roda com as regras do spec, entao alguem precisa olhar o exemplo.
+
+    Sem isto, baixar `broll_max_seconds` sem subir `max_switches_per_minute`
+    passaria em toda a suite e só falharia na maquina dele, depois de
+    transcrever o video — porque a taxa de trocas e `120 * r / L` e encurtar a
+    faixa sem soltar a taxa torna a proporcao inalcancavel.
+    """
+    for duracao in (120.0, 300.0, 900.0):
+        budget = budget_for(duracao, example_config.editorial)
+        assert budget.feasible, f"{duracao}s: {budget.reason}"
+        assert budget.n_broll_max >= budget.n_broll_min >= 1
+
+
+def test_exemplo_nao_pede_broll_curto_demais_para_o_fade(example_config):
+    """Liga as duas pontas: `broll_min_seconds` contra o fade do render.
+
+    Abaixo de 2x `crossfade_seconds` os dois fades se sobrepoem. O
+    `max_fade_ratio` protege o caso, mas um exemplo que dependesse disso em
+    TODA faixa estaria entregando b-roll que quase nao aparece.
+    """
+    render = example_config.render
+    minimo = example_config.editorial.broll_min_seconds
+    assert minimo >= 2 * render.crossfade_seconds, (
+        f"broll_min_seconds={minimo}s abaixo de 2x crossfade "
+        f"({2 * render.crossfade_seconds}s): toda faixa dependeria do clamp"
+    )

@@ -10,21 +10,49 @@
 # ===========================================================================
 # ESTE E O CAMPO MAIS IMPORTANTE DO ARQUIVO.
 #
-# `style_suffix` e concatenado ao `concept` de cada segmento antes de ir para o
-# provider de imagem. E o unico mecanismo que faz 20 imagens geradas em 20
-# chamadas independentes parecerem sair da mao do mesmo ilustrador. Se voce
-# mexer em um campo so, mexa neste — e depois de calibrar, NAO mexa mais, ou
-# os videos antigos e novos vao parecer de canais diferentes.
+# O sufixo de estilo e concatenado ao `concept` de cada segmento antes de ir
+# para o provider de imagem. E o unico mecanismo que faz 20 imagens geradas em
+# 20 chamadas independentes parecerem sair da mao do mesmo ilustrador.
 #
-# Uma boa regra: descreva medium, paleta, luz e tratamento de borda. Nao
-# descreva conteudo (isso e papel do `concept`) e nunca peca texto na imagem.
+# Sao duas formas de definir, e vale UMA:
+#
+#   style: old_money        escolhe uma entrada de `styles` (recomendado:
+#                           da para trocar e comparar sem reescrever o texto)
+#   style_suffix: "..."     o texto literal, direto
+#
+# Uma boa regra para escrever um: descreva medium, paleta, luz e tratamento
+# de borda. NAO descreva conteudo (isso e papel do `concept`) e nunca peca
+# texto na imagem.
+#
+# TROCAR DE ESTILO NAO REUSA O BANCO ANTIGO, e isso e intencional: o
+# embedding e do `concept`, que nao carrega estilo, entao sem o isolamento o
+# banco reusaria uma imagem warm num video old money e o espectador veria dois
+# ilustradores no mesmo canal. As imagens do estilo inativo ficam guardadas e
+# voltam a servir se voce voltar para ele; `pipeline bank stats` mostra quantas
+# sao e `pipeline bank prune` limpa.
 # ===========================================================================
-style_suffix: >-
-  editorial illustration, flat vector shapes with subtle paper grain,
-  muted palette of warm sand, deep teal and burnt orange on off-white,
-  soft directional light from the upper left, generous negative space,
-  thick confident outlines, no text, no lettering, no watermark,
-  no logos, no human faces in focus
+style: old_money
+
+styles:
+  # Sofisticado, escuro, old money. Claro-escuro forte, uma fonte de luz so,
+  # superficies de madeira e couro. O "near-black" e o que segura o clima:
+  # sem ele a paleta verde/oxblood/latao fica so colorida, nao sobria.
+  old_money: >-
+    moody editorial illustration in deep chiaroscuro, oil-painted texture
+    with fine canvas grain, restrained palette of forest green, oxblood,
+    aged brass and charcoal on near-black, a single warm lamp as the only
+    light source with heavy falloff into shadow, polished dark wood and
+    worn leather surfaces, soft vignette, no text, no lettering,
+    no watermark, no logos, no human faces in focus
+
+  # O estilo claro, mantido para comparar. Um b-roll gerado em cada estilo
+  # fica marcado com o seu, entao alternar nao mistura os dois.
+  editorial_warm: >-
+    editorial illustration, flat vector shapes with subtle paper grain,
+    muted palette of warm sand, deep teal and burnt orange on off-white,
+    soft directional light from the upper left, generous negative space,
+    thick confident outlines, no text, no lettering, no watermark,
+    no logos, no human faces in focus
 
 anthropic:
   # O planejamento editorial (estagio 3) e o que mais determina se o video
@@ -65,60 +93,42 @@ anthropic:
 #
 # Para testar com video curto, o caminho e baixar `intro_aroll_seconds` para
 # uns 8s e `broll_ratio_min` para uns 0.35.
+# Regras editoriais. Alimentam tanto o system prompt do estagio 3 quanto o
+# validador — as duas pontas leem daqui, entao nao podem divergir.
+#
+# O RITMO VISUAL SAI DESTES QUATRO NUMEROS, e eles nao sao independentes. Com
+# faixas de b-roll de L segundos cobrindo uma proporcao r, a taxa de trocas e
+# `120 * r / L` — que nao depende da duracao do video. Entao encurtar a faixa
+# sem subir `max_switches_per_minute` torna a proporcao inalcancavel e o
+# estagio 3 falha antes de chamar a API (de proposito: erro de regra nao pode
+# custar geracao de imagem).
+#
+# Combinacoes coerentes, com o numero de imagens que cada uma permite:
+#
+#   min  max   m | video de 126s      | video de 15 min     | geracao/mes*
+#   6.0   25   5 |  2-5 img, ~17.6s   | 13-38 img, ~16.6s   | R$  4.92
+#   4.0   12   8 |  4-8 img, ~11.0s   | 27-60 img, ~10.5s   | R$  7.87
+#   3.0    9  10 |  5-11 img, ~ 8.0s  | 35-75 img, ~ 8.4s   | R$  9.72
+#   2.0    6  14 |  8-15 img, ~ 5.9s  | 53-105 img, ~ 6.0s  | R$ 13.61
+#   1.5    5  18 |  9-19 img, ~ 4.6s  | 63-135 img, ~ 4.7s  | R$ 17.50
+#
+#   * 8 videos de 15 min, USD 0.003/imagem, SEM reuso de banco. O teto de
+#     R$ 200/mes fica intacto em qualquer linha; o custo real cai conforme o
+#     banco enche.
+#
+# O piso pratico de `broll_min_seconds` nao e zero: abaixo de ~1.5s o Ken
+# Burns quase nao se move e a troca le como corte, nao como imagem. E abaixo
+# de 2x `render.crossfade_seconds` a imagem nem chega a aparecer — o que
+# `render.max_fade_ratio` resolve, mas o movimento continua curto.
 editorial:
-  broll_min_seconds: 8.0
-  broll_max_seconds: 25.0
-  max_switches_per_minute: 3
-  intro_aroll_seconds: 20.0     # os primeiros N segundos sao sempre a-roll
-  broll_ratio_min: 0.50
-  broll_ratio_max: 0.70         # inalcancavel com os valores acima; ver nota
+  broll_min_seconds: 3.0
+  broll_max_seconds: 9.0
+  max_switches_per_minute: 10
+  intro_aroll_seconds: 8.0      # os primeiros N segundos sao sempre a-roll
+  broll_ratio_min: 0.35
+  broll_ratio_max: 0.70
   concept_tags_min: 2
   concept_tags_max: 4
-
-# Corte seco de trecho morto: pausa longa e hesitacao.
-#
-# A lista de `fillers` NAO e aplicada por texto puro. Em portugues "e" e a 3a
-# pessoa de "ser" e "um" e artigo: cortar por token destruiria frases. Todo
-# candidato precisa passar tambem pelo silencio ANTES do som e pela duracao.
-#
-# O silencio e medido so ANTES porque hesitacao tem ordem fonetica fixa: o
-# falante para, o som preenche a parada, e a fala retoma sem intervalo. A
-# pausa retorica que precisa ser protegida e o espelho disso — em "o problema
-# e... que ninguem olha" o silencio esta DEPOIS do verbo — entao olhar so o
-# lado de antes ja a preserva. Medido na saida do faster-whisper: o intervalo
-# depois vem exatamente 0.00s em 19 de 20 candidatos, porque o modelo atribui
-# spans contiguos; exigi-lo era uma regra que nunca disparava.
-#
-# O que separa hesitacao de palavra abrindo frase depois de uma pausa e a
-# duracao, comparada com a mediana daquele mesmo token na SUA fala.
-#
-# Os cortes sao listados com o texto ao redor no `--dry-run` e em trim.json,
-# para voce revisar antes de renderizar.
-trim:
-  enabled: true
-  pause_min_seconds: 0.8        # 1.2 e conservador, 0.5 e agressivo
-  #
-  # Dois mecanismos diferentes para pausa, e o de cima nao serve para fala
-  # fluente. Medido numa gravacao real de 134s: 379 palavras, mediana dos
-  # intervalos em 0.22s, maior pausa do video inteiro em 1.04s. Nao ha trecho
-  # morto para remover — nem no limiar de 0.4s o total passa de 4.7%.
-  #
-  #   pause_min_seconds  REMOVE o intervalo (sobra a margem). Poucos cortes,
-  #                      cada um uma batida audivel.
-  #   pause_max_seconds  APERTA: nenhuma pausa passa deste teto, o excesso sai
-  #                      do meio. Muitos cortes pequenos; o ritmo inteiro fica
-  #                      mais apertado em vez de o video ganhar tres saltos.
-  #
-  # O aperto e o unico lever real em fala sem trecho morto, e o preco e o
-  # numero de emendas: 3 pontos de corte viram algumas dezenas, cada um um
-  # risco de artefato. Comece em 0.35 e desca; 0 desliga.
-  pause_max_seconds: 0.0
-  filler_min_seconds: 0.40      # piso absoluto de duracao
-  filler_silence_seconds: 0.25  # silencio ANTES do som
-  filler_stretch_ratio: 2.0     # e tambem 2x a mediana daquele token na sua fala
-  keep_margin_seconds: 0.12     # sobra em cada ponta, para a emenda nao soar rente
-  min_keep_seconds: 0.35        # trecho menor que isso seria um estalo
-  fillers: [e, eh, ehh, ah, ahn, ahm, a, hm, hmm, hum, uhm, um, mm, mmm, uh]
 
 transcribe:
   model: small          # tiny | base | small | medium | large-v3
@@ -253,6 +263,12 @@ render:
   crf: 20
   preset: medium
   crossfade_seconds: 0.4
+  # Fracao maxima do segmento que cada fade pode ocupar. Sem teto, os dois
+  # fades de um b-roll curto se sobrepoem e a imagem nao chega a aparecer:
+  # medido a 0.6s com fade fixo de 0.4s, o pico de opacidade fica em 2/3 e
+  # zero frame fica na tela. Com 0.25, metade do segmento fica em opacidade
+  # cheia qualquer que seja a duracao. Nao mexa para cima de 0.5.
+  max_fade_ratio: 0.25
   # Cor do fallback de cor solida (segmento que ficou sem imagem).
   solid_fallback_color: "0x1B2A33"
   # Acima deste tamanho o filtergraph e quebrado em chunks por janela de

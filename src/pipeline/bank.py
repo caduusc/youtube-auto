@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS assets (
     embedding     BLOB    NOT NULL,
     embedding_dim INTEGER NOT NULL,
     embedding_model TEXT  NOT NULL DEFAULT '',
+    style         TEXT    NOT NULL DEFAULT '',
     cost_usd      REAL    NOT NULL DEFAULT 0.0,
     created_at    TEXT    NOT NULL,
     use_count     INTEGER NOT NULL DEFAULT 0,
@@ -131,7 +132,8 @@ def cosine(a: array | list[float], b: array | list[float]) -> float:
 
 class AssetBank:
     def __init__(
-        self, root: Path, db_path: Path, images_dir: Path, embedder: Embedder, threshold: float
+        self, root: Path, db_path: Path, images_dir: Path, embedder: Embedder,
+        threshold: float, style: str = "", styles: dict[str, str] | None = None,
     ) -> None:
         # Os caminhos em `assets.path` sao guardados relativos a `root`, para o
         # banco continuar valido se o projeto mudar de lugar.
@@ -140,6 +142,14 @@ class AssetBank:
         self.images_dir = Path(images_dir)
         self.embedder = embedder
         self.threshold = threshold
+        # Identidade do estilo ativo. O reuso e limitado a ele: ver find_similar.
+        self.style = style
+        # Nome -> sufixo de todos os estilos conhecidos, usado SO pela
+        # migracao, para reconhecer no `prompt` guardado a qual estilo cada
+        # linha antiga pertence. O mapa inteiro e nao so o ativo: quem mantem
+        # dois estilos no config e troca entre eles nao perde o reuso do que
+        # nao esta ativo agora.
+        self.styles = dict(styles or {})
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.images_dir.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(self.db_path)
@@ -165,6 +175,42 @@ class AssetBank:
             self.conn.execute(
                 "ALTER TABLE assets ADD COLUMN embedding_model TEXT NOT NULL DEFAULT ''"
             )
+        if "style" not in columns:
+            self.conn.execute(
+                "ALTER TABLE assets ADD COLUMN style TEXT NOT NULL DEFAULT ''"
+            )
+            # Aqui NAO se assume o estilo atual, ao contrario do modelo acima,
+            # e a diferenca importa. Para `embedding_model` assumir o valor
+            # atual e seguro: uma maquina usou um modelo. Para `style` nao:
+            # quem roda esta migracao provavelmente esta estreando um estilo
+            # novo, e marcar as linhas antigas com ele faria o banco jurar que
+            # uma imagem warm-sand e old money — e reusa-la, que e o dano
+            # exato que a coluna existe para evitar.
+            #
+            # Mas orfanar tudo tambem e caro: o reuso e requisito de custo, nao
+            # otimizacao. Da para ser exato em vez de chutar — `prompt` guarda
+            # `concept + style_suffix`, entao a linha cujo prompt termina com o
+            # estilo ativo E daquele estilo, lido do que de fato foi enviado ao
+            # provider. As outras viram '?', que nao casa com estilo nenhum.
+            #
+            # Stock fica em '' e continua valendo para qualquer estilo: e foto.
+            recovered = 0
+            for name, suffix in self.styles.items():
+                if not suffix.strip():
+                    continue
+                recovered += self.conn.execute(
+                    "UPDATE assets SET style = ? WHERE origin = 'generated'"
+                    " AND style = '' AND prompt IS NOT NULL"
+                    " AND TRIM(prompt) LIKE '%' || ?",
+                    (name, suffix.strip()),
+                ).rowcount
+            orphaned = self.conn.execute(
+                "UPDATE assets SET style = '?' WHERE origin = 'generated' AND style = ''"
+            ).rowcount
+            if recovered or orphaned:
+                log("bank.migrated", reconhecidas=recovered, orfas=orphaned,
+                    detail="orfa e imagem gerada cujo prompt nao casa com o estilo "
+                           "ativo; nao sera reusada (limpe com `pipeline bank prune`)")
         pending = self.conn.execute(
             "SELECT COUNT(*) AS n FROM assets WHERE embedding_model = ''"
         ).fetchone()["n"]
@@ -232,7 +278,8 @@ class AssetBank:
         # no primeiro video, e o que deixa o --dry-run responder na hora em
         # vez de esperar 400MB de modelo carregar para nada.
         if not self.conn.execute(
-            "SELECT 1 FROM assets WHERE embedding_model = ? LIMIT 1", (self.model_name,)
+            "SELECT 1 FROM assets WHERE embedding_model = ? AND (style = ? OR origin = 'stock')"
+            " LIMIT 1", (self.model_name, self.style),
         ).fetchone():
             return None
 
@@ -244,8 +291,17 @@ class AssetBank:
         # 384 os dois), entao a checagem de tamanho no cosseno nao pega a
         # troca: seriam similaridades sem sentido, reusando imagem errada em
         # silencio.
+        # Filtra tambem por ESTILO. `style_suffix` existe para 20 imagens
+        # geradas em 20 chamadas parecerem do mesmo ilustrador; reusar uma
+        # imagem de outro estilo desfaz exatamente isso, e em silencio — o
+        # embedding e do `concept`, que nao carrega estilo nenhum. Mesma
+        # familia do filtro por `embedding_model` acima.
+        #
+        # Stock entra em qualquer estilo: e foto, nao tem estilo de ilustracao
+        # para casar ou destoar.
         rows = self.conn.execute(
-            "SELECT * FROM assets WHERE embedding_model = ?", (self.model_name,)
+            "SELECT * FROM assets WHERE embedding_model = ? AND (style = ? OR origin = 'stock')",
+            (self.model_name, self.style),
         )
         for row in rows:
             if row["id"] in exclude_ids:
@@ -266,10 +322,13 @@ class AssetBank:
         vector = embedding if embedding is not None else self.embedder.embed(concept)
         cursor = self.conn.execute(
             """INSERT INTO assets (path, concept, prompt, origin, embedding, embedding_dim,
-                                   embedding_model, cost_usd, created_at, use_count, last_used_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)""",
+                                   embedding_model, style, cost_usd, created_at,
+                                   use_count, last_used_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)""",
+            # Stock nao carrega estilo: e foto, e vale para qualquer um.
             (path, concept, prompt, origin, pack(vector), len(vector),
-             self.model_name, cost_usd, now_iso()),
+             self.model_name, "" if origin == "stock" else self.style,
+             cost_usd, now_iso()),
         )
         self.conn.commit()
         row = self.conn.execute("SELECT * FROM assets WHERE id = ?", (cursor.lastrowid,)).fetchone()
@@ -300,11 +359,19 @@ class AssetBank:
             for r in self.conn.execute(
                 "SELECT embedding_model, COUNT(*) AS n FROM assets GROUP BY embedding_model")
         }
+        by_style = {
+            r["style"]: r["n"]
+            for r in self.conn.execute(
+                "SELECT style, COUNT(*) AS n FROM assets WHERE origin = 'generated'"
+                " GROUP BY style")
+        }
         return {
             "assets": row["n"],
             "by_origin": by_origin,
             "by_model": by_model,
             "active_model": self.model_name,
+            "by_style": by_style,
+            "active_style": self.style,
             "total_spent_usd": round(row["spent"], 4),
             "total_uses": row["uses"],
             "never_used": never,

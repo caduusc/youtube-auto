@@ -20,6 +20,8 @@ def open_bank(config: Config) -> AssetBank:
         images_dir=config.path(config.bank.images_dir),
         embedder=SentenceTransformerEmbedder(identity, load_path),
         threshold=config.bank.similarity_threshold,
+        style=config.style_name,
+        styles=config.known_styles,
     )
 
 

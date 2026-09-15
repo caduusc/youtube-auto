@@ -21,6 +21,14 @@ from pipeline.filtergraph import (
 
 
 @pytest.fixture
+def overlay_curto_e_longo():
+    return (
+        Overlay(start=2.0, end=3.0, direction="zoom_in", image_path=Path("curto.png")),
+        Overlay(start=5.0, end=13.0, direction="pan_right", image_path=Path("longo.png")),
+    )
+
+
+@pytest.fixture
 def render(config):
     return config.render
 
@@ -308,3 +316,50 @@ def test_chunk_que_cabe_nao_avisa(capsys):
     chunks = plan_chunks([], 24.0, RenderConfig(), window=lambda a, b: (a, b - a, [(0.0, 24.0)]))
     assert len(chunks) == 1
     assert "render.warn" not in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------
+# fade proporcional: o que torna b-roll curto representavel
+# --------------------------------------------------------------------------
+
+
+def test_fade_fixo_em_segmento_longo():
+    """Acima de 2x o crossfade nada muda, entao config antigo nao regride."""
+    from pipeline.filtergraph import fade_for
+
+    cfg = RenderConfig(crossfade_seconds=0.4)
+    for duracao in (2.0, 6.0, 25.0):
+        assert fade_for(duracao, cfg) == pytest.approx(0.4)
+
+
+def test_fade_encolhe_com_segmento_curto():
+    """Com fade fixo, 0.8s gastaria 0.4s entrando e 0.4s saindo: a imagem
+    apareceria como um triangulo e nunca chegaria a opacidade cheia."""
+    from pipeline.filtergraph import fade_for
+
+    cfg = RenderConfig(crossfade_seconds=0.4, max_fade_ratio=0.25)
+    for duracao in (0.8, 1.0, 1.5):
+        fade = fade_for(duracao, cfg)
+        cheio = duracao - 2 * fade
+        assert cheio == pytest.approx(duracao * 0.5), duracao
+        assert cheio > 0
+
+
+def test_fade_de_duracao_zero_nao_e_negativo():
+    from pipeline.filtergraph import fade_for
+
+    assert fade_for(0.0, RenderConfig()) == 0.0
+    assert fade_for(-1.0, RenderConfig()) == 0.0
+
+
+def test_grafo_usa_o_fade_do_segmento(render, overlay_curto_e_longo):
+    """Dois b-rolls de duracoes diferentes no MESMO grafo usam fades
+    diferentes — o valor nao pode ser calculado uma vez fora do laco."""
+    curto, longo = overlay_curto_e_longo
+    graph = build_graph(
+        Chunk(0, 0.0, 30.0, [curto, longo], keep=[(0.0, 30.0)],
+              input_start=0.0, input_duration=30.0),
+        render, None,
+    )
+    assert "d=0.25:alpha=1" in graph      # o de 1.0s
+    assert "d=0.4:alpha=1" in graph       # o de 8.0s
