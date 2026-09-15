@@ -45,8 +45,22 @@ parou. Dois contornos, em ordem:
 - se persistir, baixe fora do pipeline com `hf download <modelo>`, que
   retenta sozinho, e depois rode normalmente — o cache é o mesmo.
 
-Erro de TLS (`BAD_RECORD_MAC`) costuma ser antivírus ou VPN inspecionando a
-conexão; desligar temporariamente resolve.
+**Erro de TLS** (`DECRYPTION_FAILED_OR_BAD_RECORD_MAC`) é caso diferente:
+não é falta de rede, é algo quebrando os registros da conexão. Reexecutar não
+resolve — arquivos pequenos passam e a transferência sustentada quebra. Em
+ordem de eficácia:
+
+1. `uv pip install hf_transfer` e `set HF_HUB_ENABLE_HF_TRANSFER=1` — o
+   downloader em Rust usa outra pilha TLS;
+2. desligar a inspeção de HTTPS do antivírus ou a VPN durante o download, que
+   é a causa mais comum;
+3. `hf download <modelo>` repetido até completar, já que cada tentativa retoma
+   de onde parou;
+4. baixar o repositório do modelo pelo navegador e apontar
+   `bank.embedding_model` para a pasta local — o campo aceita caminho.
+
+O estágio 4 distingue os dois modos de falha e imprime essa lista quando o
+erro é de TLS.
 
 O estágio 4 carrega esse modelo **antes** de baixar ou gerar qualquer imagem,
 justamente para que essa falha não aconteça depois de você já ter pago.
