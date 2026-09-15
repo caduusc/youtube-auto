@@ -38,6 +38,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .config import RenderConfig
+from .log import log
 
 
 @dataclass
@@ -311,7 +312,7 @@ def plan_chunks(
         return chunk
 
     if not overlays:
-        return [finish(Chunk(index=0, start=0.0, end=duration))]
+        return _warn_if_over([finish(Chunk(index=0, start=0.0, end=duration))], cfg)
 
     single = finish(Chunk(index=0, start=0.0, end=duration, overlays=_localize(overlays, 0.0)))
     if len(build_graph(single, cfg, Path("subs.ass"))) <= cfg.max_filtergraph_chars:
@@ -339,6 +340,31 @@ def plan_chunks(
     chunks.append(finish(Chunk(
         index=len(chunks), start=chunk_start, end=duration,
         overlays=_localize(batch, chunk_start))))
+    return _warn_if_over(chunks, cfg)
+
+
+def _warn_if_over(chunks: list[Chunk], cfg: RenderConfig) -> list[Chunk]:
+    """Avisa quando um chunk nao caber no limite, em vez de deixar o ffmpeg falar.
+
+    As fronteiras de chunk sao as fronteiras de b-roll, entao o grafo de um
+    chunk cresce com o que estiver DENTRO dele — e com o aperto de pausa
+    ligado isso e o numero de emendas, que escala com a duracao e nao com o
+    numero de b-rolls. Um trecho longo de a-roll corrido com aperto agressivo
+    nao tem onde ser partido.
+
+    Nao ha fallback automatico porque nao existe um bom: partir no meio de
+    uma emenda mudaria o corte, e o que resolve de verdade e subir o
+    `max_filtergraph_chars` (o limite de 3000 e conservador) ou afrouxar o
+    `pause_max_seconds`. O aviso diz qual dos dois.
+    """
+    for chunk in chunks:
+        size = len(build_graph(chunk, cfg, Path("subs.ass")))
+        if size > cfg.max_filtergraph_chars:
+            log("render.warn",
+                chunk=chunk.index, chars=size, limite=cfg.max_filtergraph_chars,
+                emendas=len(chunk.keep),
+                detail="filtergraph acima do limite; suba render.max_filtergraph_chars "
+                       "ou afrouxe trim.pause_max_seconds")
     return chunks
 
 

@@ -46,6 +46,7 @@ def run(manifest: Manifest, transcript: Transcript, config: Config) -> tuple[Tri
                 cuts=plan.stats.n_cuts,
                 pausas=plan.stats.n_pause_cuts,
                 hesitacoes=plan.stats.n_filler_cuts,
+                apertos=plan.stats.n_squeeze_cuts,
                 removido=f"{plan.stats.removed_seconds:.1f}s",
                 ratio=f"{plan.stats.removed_ratio:.1%}",
                 duracao=f"{plan.stats.trimmed_seconds:.1f}s")
@@ -73,7 +74,7 @@ def render_text(plan: TrimPlan, limit: int = 40) -> str:
         "  " + "-" * 72,
     ]
     for cut in plan.cuts[:limit]:
-        marca = "hesitacao" if cut.reason == "filler" else "pausa    "
+        marca = {"filler": "hesitacao", "squeeze": "aperto   "}.get(cut.reason, "pausa    ")
         lines.append(f"  {cut.start:7.1f}s  {marca}  {cut.duration:4.1f}s")
         lines.append(f"            {cut.context}")
     if len(plan.cuts) > limit:
@@ -82,7 +83,8 @@ def render_text(plan: TrimPlan, limit: int = 40) -> str:
         "  " + "-" * 72,
         f"  {s.n_cuts} corte{'s' if s.n_cuts != 1 else ''}: "
         f"{s.n_pause_cuts} pausa{'s' if s.n_pause_cuts != 1 else ''}, "
-        f"{s.n_filler_cuts} hesitac{'oes' if s.n_filler_cuts != 1 else 'ao'}",
+        f"{s.n_filler_cuts} hesitac{'oes' if s.n_filler_cuts != 1 else 'ao'}, "
+        f"{s.n_squeeze_cuts} aperto{'s' if s.n_squeeze_cuts != 1 else ''}",
         f"  {s.original_seconds:.1f}s -> {s.trimmed_seconds:.1f}s "
         f"({s.removed_seconds:.1f}s removidos, {s.removed_ratio:.1%})",
         "",

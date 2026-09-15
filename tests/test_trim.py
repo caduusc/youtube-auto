@@ -265,8 +265,8 @@ def test_palavra_da_lista_abrindo_o_video_sem_silencio_nao_e_cortada(rules):
 
 
 def test_pausa_retorica_depois_do_verbo_nao_corta_o_verbo(rules):
-    """'o problema é... que ninguém olha' — o silencio de um lado so nao
-    pode bastar, senao a frase perde o verbo."""
+    """'o problema é... que ninguém olha' — o silencio esta DEPOIS do verbo,
+    e o teste olha o lado de antes, entao a frase mantem o verbo."""
     t = fala(("o", 0.00, 0.15), ("problema", 0.15, 0.75), ("é", 0.75, 1.20),
              ("que", 2.10, 2.30), ("ninguem", 2.30, 2.80), ("olha", 2.80, 3.20))
     cuts = find_cuts(t, rules)
@@ -291,3 +291,165 @@ def test_fps_diferente_da_chave_de_cache_diferente(rules):
     invalida o corte."""
     t = fala(("para", 0.00, 0.50), ("dois", 3.00, 3.50))
     assert build_plan(t, rules, 30.0).input_hash != build_plan(t, rules, 60.0).input_hash
+
+
+# --------------------------------------------------------------------------
+# a assimetria do silencio, e o piso relativo que ela exige
+# --------------------------------------------------------------------------
+
+
+def test_hesitacao_com_silencio_so_antes_e_cortada(rules):
+    """A forma real de uma hesitacao: pausa, som, e a fala retoma rente.
+
+    O intervalo DEPOIS vem exatamente 0.00s do faster-whisper em quase todo
+    candidato, porque o modelo atribui spans contiguos. Exigir aquele lado
+    fazia esta regra nunca disparar em transcript nenhum.
+    """
+    t = fala(("entao", 0.00, 0.40), ("é", 1.00, 1.75), ("eu", 1.75, 1.95),
+             ("acho", 1.95, 2.30), ("que", 2.30, 2.50), ("sim", 2.50, 2.90))
+    fillers = [c for c in find_cuts(t, rules) if c.reason == "filler"]
+    assert [c.token for c in fillers] == ["é"]
+
+
+def test_verbo_abrindo_frase_depois_de_pausa_nao_e_cortado(rules):
+    """'...olha isso. É importante que' — tem silencio antes e esta na lista.
+
+    E o caso que a regra de um lado so poderia destruir, e o que segura e a
+    duracao: 0.30s e o tamanho normal de um "é" nesta fala, nao de um
+    alongamento. Sem o piso relativo, `filler_min_seconds` sozinho nao
+    distingue os dois.
+    """
+    t = fala(("olha", 0.00, 0.35), ("isso", 0.35, 0.75),
+             ("é", 1.50, 1.95),                            # 0.45s, > o piso absoluto
+             ("importante", 1.95, 2.60), ("que", 2.60, 2.80),
+             ("é", 2.80, 3.10), ("assim", 3.10, 3.50),     # mediana do "é" fica em 0.30s
+             ("e", 3.50, 3.72), ("pronto", 3.72, 4.20))
+    fillers = [c for c in find_cuts(t, rules) if c.reason == "filler"]
+    assert fillers == [], [c.model_dump() for c in fillers]
+
+
+def test_alongamento_acima_da_mediana_da_propria_fala_e_cortado(rules):
+    """A mesma fala do teste anterior, com o primeiro 'é' alongado ao dobro.
+
+    Nada mudou no config: o que mudou e a duracao relativa ao que aquele
+    token dura no resto da gravacao.
+    """
+    t = fala(("olha", 0.00, 0.35), ("isso", 0.35, 0.75),
+             ("é", 1.50, 2.35),                            # 0.85s, ~2.8x a mediana
+             ("importante", 2.35, 3.00), ("que", 3.00, 3.20),
+             ("é", 3.20, 3.50), ("assim", 3.50, 3.90),
+             ("e", 3.90, 4.12), ("pronto", 4.12, 4.60))
+    fillers = [c for c in find_cuts(t, rules) if c.reason == "filler"]
+    assert [c.token for c in fillers] == ["é"]
+    assert fillers[0].start == pytest.approx(1.50)
+
+
+def test_token_raro_cai_no_piso_absoluto(rules):
+    """'ahn' aparece uma vez e nao tem mediana.
+
+    Com amostra de um, a mediana seria a propria palavra e a razao daria 1.0,
+    o que nunca cortaria. Token sem amostra usa o piso absoluto — e para os
+    inequivocos ele basta, porque nenhum deles e palavra de conteudo.
+    """
+    t = fala(("bom", 0.00, 0.30), ("ahn", 0.70, 1.25), ("vamos", 1.25, 1.65))
+    assert any(c.token == "ahn" for c in find_cuts(t, rules) if c.reason == "filler")
+
+
+def test_mediana_ignora_amostra_pequena(rules):
+    from pipeline.trim import token_medians
+
+    words = [Word(start=0.0, end=0.2, word="e"), Word(start=0.3, end=0.5, word="e"),
+             Word(start=0.6, end=1.0, word="so")]
+    assert token_medians(words) == {}          # duas e uma ocorrencia, nenhuma serve
+
+    words.append(Word(start=1.1, end=1.7, word="e"))
+    assert token_medians(words)["e"] == pytest.approx(0.2)   # 0.2, 0.2, 0.6
+
+
+def test_mediana_nao_e_media(rules):
+    """Uma hesitacao longa nao pode levantar o piso e se proteger sozinha."""
+    from pipeline.trim import token_medians
+
+    words = [Word(start=i * 0.5, end=i * 0.5 + 0.2, word="e") for i in range(5)]
+    words.append(Word(start=9.0, end=9.9, word="e"))        # a hesitacao
+    assert token_medians(words)["e"] == pytest.approx(0.2)   # media daria 0.317
+
+
+
+# --------------------------------------------------------------------------
+# aperto de pausa: o mecanismo para fala fluente
+# --------------------------------------------------------------------------
+
+
+def test_aperto_desligado_por_default(rules):
+    """Muitas emendas e um custo real, entao o default nao liga sozinho."""
+    assert rules.pause_max_seconds == 0.0
+    t = fala(("uma", 0.00, 0.30), ("frase", 0.75, 1.20))   # gap de 0.45s
+    assert find_cuts(t, rules) == []
+
+
+def test_aperto_deixa_a_pausa_no_tamanho_do_teto():
+    rules = TrimConfig(pause_max_seconds=0.20)
+    t = fala(("uma", 0.00, 0.30), ("frase", 0.80, 1.20))   # gap de 0.50s
+    cuts = find_cuts(t, rules)
+    assert [c.reason for c in cuts] == ["squeeze"]
+    # sobra exatamente o teto, nao zero: a pausa continua existindo
+    assert cuts[0].duration == pytest.approx(0.50 - 0.20)
+
+
+def test_aperto_tira_do_meio_do_intervalo():
+    """De uma ponta so, uma das duas palavras fica emendada rente."""
+    rules = TrimConfig(pause_max_seconds=0.20)
+    t = fala(("uma", 0.00, 0.30), ("frase", 0.80, 1.20))
+    cut = find_cuts(t, rules)[0]
+    assert cut.start - 0.30 == pytest.approx(0.10)   # sobra 0.10s de cada lado
+    assert 0.80 - cut.end == pytest.approx(0.10)
+
+
+def test_pausa_longa_ainda_e_removida_e_nao_apertada():
+    """O teto nao rebaixa a remocao: acima de `pause_min_seconds` continua
+    saindo quase inteira, que e a batida audivel."""
+    rules = TrimConfig(pause_max_seconds=0.20, pause_min_seconds=0.8)
+    t = fala(("acabou", 0.00, 0.50), ("segue", 2.00, 2.60))
+    cuts = find_cuts(t, rules)
+    assert [c.reason for c in cuts] == ["pause"]
+    assert cuts[0].duration == pytest.approx(1.50 - 2 * rules.keep_margin_seconds)
+
+
+def test_intervalo_abaixo_do_teto_nao_e_tocado():
+    rules = TrimConfig(pause_max_seconds=0.30)
+    t = fala(("uma", 0.00, 0.30), ("frase", 0.55, 1.00))   # gap de 0.25s
+    assert find_cuts(t, rules) == []
+
+
+def test_aperto_rende_mais_que_remocao_em_fala_fluente():
+    """O caso que motivou o mecanismo: intervalos medios, nenhum longo.
+
+    Seis intervalos de 0.5s. A remocao com limiar 0.8 nao pega nenhum; o
+    aperto em 0.2 tira 0.3s de cada um.
+    """
+    tokens = [(f"p{i}", i * 1.0, i * 1.0 + 0.5) for i in range(7)]
+    t = fala(*tokens)                                      # gaps de 0.5s
+
+    so_remocao = build_plan(t, TrimConfig(), FPS)
+    assert so_remocao.stats.n_cuts == 0
+
+    com_aperto = build_plan(t, TrimConfig(pause_max_seconds=0.2), FPS)
+    assert com_aperto.stats.n_squeeze_cuts == 6
+    assert com_aperto.stats.removed_seconds == pytest.approx(6 * 0.3, abs=0.05)
+
+
+def test_aperto_entra_na_chave_de_cache():
+    t = fala(("uma", 0.00, 0.30), ("frase", 0.80, 1.20))
+    a = build_plan(t, TrimConfig(), FPS)
+    b = build_plan(t, TrimConfig(pause_max_seconds=0.2), FPS)
+    assert a.input_hash != b.input_hash
+
+
+def test_estatisticas_fecham_com_aperto():
+    rules = TrimConfig(pause_max_seconds=0.2)
+    tokens = [(f"p{i}", i * 1.0, i * 1.0 + 0.5) for i in range(5)]
+    plan = build_plan(fala(*tokens), rules, FPS)
+    s = plan.stats
+    assert s.n_cuts == s.n_pause_cuts + s.n_filler_cuts + s.n_squeeze_cuts
+    assert s.trimmed_seconds == pytest.approx(sum(r.duration for r in plan.keep), abs=1e-3)

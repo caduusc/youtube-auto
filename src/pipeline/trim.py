@@ -9,13 +9,52 @@ hesitacao sao tambem palavras de conteudo:
     "bom, UM..., vamos ver"       -> hesitacao
 
 Por isso a lista de `fillers` do config nunca decide sozinha. Todo candidato
-precisa passar por tres testes ao mesmo tempo: estar na lista, durar acima do
-minimo, e ter silencio dos DOIS lados. Palavra em fala corrida falha nos dois
-ultimos; hesitacao passa nos tres.
+passa por dois testes: silencio ANTES, e duracao acima do que aquele mesmo
+token costuma durar nesta fala.
 
-O silencio dos dois lados, em vez de um, e o que protege a pausa retorica:
-em "o problema E... que ninguem olha", a pausa depois do verbo bastaria para
-marcar como hesitacao se um lado fosse suficiente.
+O silencio e medido so ANTES, e a assimetria e a parte que nao e obvia.
+Hesitacao e pausa e som tem uma ordem fonetica fixa: o falante para, o som
+preenche a parada, e a fala retoma sem intervalo.
+
+    "entao ... E eu acho que"        silencio antes, nada depois  -> hesitacao
+    "o problema E ... que ninguem"   nada antes, silencio depois  -> verbo
+
+Os dois padroes sao o espelho um do outro, entao exigir silencio nos dois
+lados rejeita os dois. Medido na saida real do faster-whisper: o intervalo
+DEPOIS e exatamente 0.00s em 19 de 20 candidatos, porque o modelo atribui
+spans de palavra contiguos em vez de silencio medido. Exigir aquele lado
+nao era conservador, era uma regra que nunca podia disparar.
+
+O que sobra para distinguir hesitacao de palavra iniciando frase depois de
+uma pausa ("...olha isso. E importante que...") e a duracao, comparada com a
+mediana daquele token no resto da fala: hesitacao e alongada, verbo nao.
+A calibracao sai da propria fala, entao acompanha o ritmo de quem gravou.
+Isso cai exatamente onde precisa: os tokens ambiguos ("e", "a", "um") sao os
+frequentes, e tem amostra sobrando; os inequivocos ("hm", "ahn") sao raros e
+caem no piso absoluto de `filler_min_seconds`, que para eles basta.
+
+Pausa: remover, ou apertar
+--------------------------
+
+Ha dois mecanismos, porque remover trecho morto nao funciona em fala
+fluente. Medido numa gravacao real de 134s: 379 palavras, mediana dos
+intervalos em 0.22s, e a maior pausa do video inteiro em 1.04s. Nao existe
+trecho morto — no limiar mais agressivo que ainda faz sentido (0.4s) o total
+removivel e 4.7%, e o teto nao sobe porque a materia-prima nao esta la.
+
+    `pause_min_seconds`  remocao: o intervalo sai quase inteiro, sobrando a
+                         margem. Poucos cortes, cada um uma batida audivel.
+
+    `pause_max_seconds`  aperto: nenhum intervalo passa deste teto, e o
+                         excesso sai do meio. Muitos cortes pequenos, e o
+                         ritmo inteiro fica mais apertado em vez de o video
+                         ganhar tres saltos.
+
+O aperto e o unico que responde a "quero mais dinamismo" numa fala sem
+trecho morto, e o custo dele e o numero de emendas: aquela gravacao de 134s
+passa de 3 pontos de corte para algumas dezenas. Cada emenda e um risco de
+artefato, e o filtergraph cresce junto — o que `plan_chunks` ja resolve, mas
+com mais um chunk por vez. Por isso o default e zero, desligado.
 """
 
 from __future__ import annotations
@@ -56,38 +95,94 @@ def context_around(words: list[Word], index: int, span: int = 4) -> str:
     return " ".join(parts)
 
 
+# Abaixo disso a mediana nao descreve nada: com duas ocorrencias ela e a
+# media de duas, e com uma ela e a propria palavra, o que daria razao 1.0 e
+# nunca cortaria. Token com amostra menor cai no piso absoluto.
+MIN_SAMPLE = 3
+
+
+def token_medians(words: list[Word]) -> dict[str, float]:
+    """Duracao mediana de cada token que aparece o bastante para ter mediana.
+
+    Mediana e nao media de proposito: uma hesitacao de 0.9s no meio de cinco
+    "e" de 0.2s puxaria a media para 0.34s e levantaria o piso justamente por
+    causa do caso que se quer pegar.
+    """
+    spans: dict[str, list[float]] = {}
+    for word in words:
+        spans.setdefault(normalize(word.word), []).append(word.end - word.start)
+
+    medians: dict[str, float] = {}
+    for token, values in spans.items():
+        if len(values) < MIN_SAMPLE:
+            continue
+        values.sort()
+        middle = len(values) // 2
+        medians[token] = (
+            values[middle] if len(values) % 2
+            else (values[middle - 1] + values[middle]) / 2.0
+        )
+    return medians
+
+
+def filler_floor(
+    token: str, medians: dict[str, float], rules: TrimConfig
+) -> float:
+    """Duracao minima para este token contar como hesitacao.
+
+    O piso do config e absoluto e vale para todo mundo. Em cima dele, um
+    token com amostra na fala ganha um piso relativo: `stretch_ratio` vezes a
+    mediana dele mesmo. E isso que separa "...olha isso. E importante que" —
+    verbo abrindo frase depois de uma pausa, com a duracao normal de um "e" —
+    de "entao ... Eeee eu acho", que dura o dobro.
+
+    Vale o MAIOR dos dois. O piso absoluto nunca e afrouxado por uma fala em
+    que o token e naturalmente curto.
+
+    O limite disto e o espelho do que o faz funcionar: a mediana descreve o
+    uso dominante daquele token. Se alguem usasse "e" mais como hesitacao do
+    que como verbo, a mediana seria a hesitacao e o piso subiria acima dela.
+    Nao e o caso de fala normal — numa gravacao real, dos 9 "e" tres quartos
+    estavam entre 0.18s e 0.32s (verbo e conjuntura) e dois eram outliers
+    longos — mas e por isso que `filler_min_seconds` continua existindo em
+    vez de o piso ser so relativo.
+    """
+    absolute = rules.filler_min_seconds
+    median = medians.get(token)
+    if median is None:
+        return absolute
+    return max(absolute, median * rules.filler_stretch_ratio)
+
+
 def find_cuts(transcript: Transcript, rules: TrimConfig) -> list[Cut]:
     """Trechos a remover, em tempo da entrada original."""
     words = all_words(transcript)
     if not words:
         return []
-    duration = transcript.duration
 
     margin = rules.keep_margin_seconds
     wanted = {normalize(f) for f in rules.fillers}
+    medians = token_medians(words)
     cuts: list[Cut] = []
 
     # --- hesitacao ---------------------------------------------------------
     for index, word in enumerate(words):
-        if normalize(word.word) not in wanted:
-            continue
-        spoken = word.end - word.start
-        if spoken < rules.filler_min_seconds:
+        token = normalize(word.word)
+        if token not in wanted:
             continue
 
-        # Na borda da gravacao o silencio e medido contra o inicio e o fim do
-        # audio, nao tratado como infinito: com infinito, qualquer palavra da
-        # lista que abrisse o video seria cortada.
+        # Na borda da gravacao o silencio e medido contra o inicio do audio,
+        # nao tratado como infinito: com infinito, qualquer palavra da lista
+        # que abrisse o video seria cortada.
         silence_before = word.start - (words[index - 1].end if index else 0.0)
-        silence_after = (
-            (words[index + 1].start if index + 1 < len(words) else duration) - word.end
-        )
+        if silence_before < rules.filler_silence_seconds:
+            continue
 
-        # Silencio dos DOIS lados, nao de um. Com "um dos lados", a fala
-        # "o problema é... que ninguem olha" perderia o verbo, porque a pausa
-        # retorica depois dele bastaria para marcar como hesitacao. Exigir os
-        # dois lados custa perder algum filler e protege toda frase corrida.
-        if min(silence_before, silence_after) < rules.filler_silence_seconds:
+        # So ANTES, nao dos dois lados: ver o docstring do modulo. O intervalo
+        # depois e zerado pelo transcritor, e a pausa retorica que precisa ser
+        # protegida ("o problema é... que ninguem olha") tem silencio do lado
+        # oposto a este, entao este teste sozinho ja a preserva.
+        if word.end - word.start < filler_floor(token, medians, rules):
             continue
 
         cuts.append(Cut(
@@ -95,16 +190,33 @@ def find_cuts(transcript: Transcript, rules: TrimConfig) -> list[Cut]:
             token=word.word.strip(), context=context_around(words, index),
         ))
 
-    # --- pausa -------------------------------------------------------------
+    # --- pausa e aperto ----------------------------------------------------
     for index, (current, following) in enumerate(zip(words, words[1:])):
         gap = following.start - current.end
-        if gap < rules.pause_min_seconds:
+
+        if gap >= rules.pause_min_seconds:
+            # Trecho morto: sai quase inteiro, sobrando so a margem. E um
+            # corte audivel, uma batida — por isso o limiar e alto.
+            start, end = current.end + margin, following.start - margin
+            reason = "pause"
+
+        elif rules.pause_max_seconds and gap > rules.pause_max_seconds:
+            # Aperto: a pausa continua existindo, com o tamanho do teto. O
+            # excesso sai do MEIO do intervalo, para as duas palavras
+            # manterem o proprio ataque e a propria queda — tirar de uma
+            # ponta so deixa uma das duas emendada rente.
+            excess = gap - rules.pause_max_seconds
+            middle = (current.end + following.start) / 2.0
+            start, end = middle - excess / 2.0, middle + excess / 2.0
+            reason = "squeeze"
+
+        else:
             continue
-        start, end = current.end + margin, following.start - margin
+
         if end - start <= 0:
             continue
         cuts.append(Cut(
-            start=start, end=end, reason="pause",
+            start=start, end=end, reason=reason,
             context=context_around(words, index, span=3),
         ))
 
@@ -255,5 +367,6 @@ def build_plan(transcript: Transcript, rules: TrimConfig, fps: float) -> TrimPla
             n_cuts=len(cuts),
             n_pause_cuts=sum(1 for c in cuts if c.reason == "pause"),
             n_filler_cuts=sum(1 for c in cuts if c.reason == "filler"),
+            n_squeeze_cuts=sum(1 for c in cuts if c.reason == "squeeze"),
         ),
     )

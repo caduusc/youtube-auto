@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from pipeline.config import RenderConfig
 from pipeline.filtergraph import (
     Chunk,
     Overlay,
@@ -283,3 +284,27 @@ def test_frame_align_encaixa_no_grid(value, expected):
 
 def test_frame_align_com_fps_invalido_nao_explode():
     assert frame_align(1.234, 0.0) == 1.234
+
+
+def test_chunk_que_nao_cabe_avisa(capsys):
+    """Com aperto de pausa, o grafo cresce com a duracao e nao com os b-rolls.
+
+    As fronteiras de chunk sao as de b-roll, entao a-roll corrido com muitas
+    emendas nao tem onde ser partido. O aviso e a unica saida honesta: nao
+    existe fallback bom — partir no meio de uma emenda mudaria o corte.
+    """
+    cfg = RenderConfig(max_filtergraph_chars=400)
+    keep = [(i * 0.6, i * 0.6 + 0.4) for i in range(40)]
+    chunks = plan_chunks([], 24.0, cfg, window=lambda a, b: (a, b - a, keep))
+
+    assert len(chunks) == 1                      # sem b-roll, nao ha onde partir
+    saida = capsys.readouterr().out
+    assert "render.warn" in saida
+    assert "emendas=40" in saida
+    assert "pause_max_seconds" in saida
+
+
+def test_chunk_que_cabe_nao_avisa(capsys):
+    chunks = plan_chunks([], 24.0, RenderConfig(), window=lambda a, b: (a, b - a, [(0.0, 24.0)]))
+    assert len(chunks) == 1
+    assert "render.warn" not in capsys.readouterr().out
