@@ -10,6 +10,7 @@ reusaria imagem errada em silencio.
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
 import pytest
 
@@ -144,3 +145,52 @@ def test_banco_sem_a_coluna_e_migrado(tmp_path):
     # e o asset legado segue reusavel
     hit = bank.find_similar("a desk with a notebook")
     assert hit is not None
+
+
+# --------------------------------------------------------------------------
+# pasta local vs ID do HuggingFace
+# --------------------------------------------------------------------------
+
+
+def test_id_do_hub_passa_inalterado(tmp_path):
+    from pipeline.embed import resolve_model
+
+    identity, load_path = resolve_model(ENGLISH, tmp_path)
+    assert identity == ENGLISH
+    assert load_path == ENGLISH
+
+
+def test_pasta_local_e_resolvida_contra_a_raiz(tmp_path):
+    """Sem isso, o pipeline rodado de outro diretorio nao acha o modelo."""
+    from pipeline.embed import resolve_model
+
+    (tmp_path / "models" / "all-MiniLM-L6-v2").mkdir(parents=True)
+    identity, load_path = resolve_model("models/all-MiniLM-L6-v2", tmp_path)
+
+    assert Path(load_path).is_absolute()
+    assert Path(load_path) == (tmp_path / "models" / "all-MiniLM-L6-v2").resolve()
+
+
+def test_identidade_nao_vira_caminho_absoluto(tmp_path):
+    """A identidade vai para cada linha do banco. Se fosse o caminho
+    absoluto, mover o projeto invalidaria o banco inteiro."""
+    from pipeline.embed import resolve_model
+
+    (tmp_path / "models" / "all-MiniLM-L6-v2").mkdir(parents=True)
+    identity, _ = resolve_model("models/all-MiniLM-L6-v2", tmp_path)
+    assert identity == "models/all-MiniLM-L6-v2"
+
+
+def test_pasta_inexistente_cai_para_id_do_hub(tmp_path):
+    from pipeline.embed import resolve_model
+
+    identity, load_path = resolve_model("models/nao-existe", tmp_path)
+    assert identity == load_path == "models/nao-existe"
+
+
+def test_embedder_usa_load_path_e_reporta_model_name(tmp_path):
+    from pipeline.embed import SentenceTransformerEmbedder
+
+    e = SentenceTransformerEmbedder("models/local", str(tmp_path / "models" / "local"))
+    assert e.model_name == "models/local"
+    assert e.load_path == str(tmp_path / "models" / "local")

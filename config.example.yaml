@@ -35,6 +35,18 @@ anthropic:
   max_tokens: 16000
   timeout_seconds: 900  # Opus com thinking adaptativo pensa um bom tempo
   max_attempts: 3       # tentativas de EDL valida antes de desistir
+  # Planejamento em duas fases. A fase 1 le a transcricao inteira e devolve o
+  # briefing visual do video (assunto, argumento, vocabulario visual, clices a
+  # evitar); a fase 2 monta a EDL escolhendo dentro daquele vocabulario.
+  #
+  # Existe porque as duas tarefas competiam na mesma resposta: pedir na mesma
+  # chamada "segmente a timeline" e "invente as imagens" fazia a segunda
+  # sofrer, e saiam cenas plausiveis para um video de criador genericamente,
+  # nao para ESTE video.
+  #
+  # Custa uma chamada a mais por video, uns USD 0.05. `false` volta ao passe
+  # unico.
+  two_phase: true
 
 # Regras editoriais. Alimentam tanto o system prompt do estagio 3 quanto o
 # validador — as duas pontas leem daqui, entao nao podem divergir.
@@ -63,6 +75,26 @@ editorial:
   concept_tags_min: 2
   concept_tags_max: 4
 
+# Corte seco de trecho morto: pausa longa e hesitacao.
+#
+# A lista de `fillers` NAO e aplicada por texto puro. Em portugues "e" e a 3a
+# pessoa de "ser" e "um" e artigo: cortar por token destruiria frases. Todo
+# candidato precisa passar tambem pela duracao minima E pelo silencio dos DOIS
+# lados. Exigir os dois lados, em vez de um, e o que protege a pausa retorica:
+# em "o problema e... que ninguem olha", a pausa depois do verbo bastaria para
+# marcar como hesitacao se um lado fosse suficiente.
+#
+# Os cortes sao listados com o texto ao redor no `--dry-run` e em trim.json,
+# para voce revisar antes de renderizar.
+trim:
+  enabled: true
+  pause_min_seconds: 0.8        # 1.2 e conservador, 0.5 e agressivo
+  filler_min_seconds: 0.40
+  filler_silence_seconds: 0.25
+  keep_margin_seconds: 0.12     # sobra em cada ponta, para a emenda nao soar rente
+  min_keep_seconds: 0.35        # trecho menor que isso seria um estalo
+  fillers: [e, eh, ehh, ah, ahn, ahm, a, hm, hmm, hum, uhm, um, mm, mmm, uh]
+
 transcribe:
   model: small          # tiny | base | small | medium | large-v3
   device: cpu
@@ -90,14 +122,35 @@ bank:
   # ser reusados e o `bank stats` mostra as duas familias.
   #
   # Aceita tambem o caminho de uma pasta local, se a sua rede nao consegue
-  # baixar do HuggingFace: baixe o repositorio do modelo por fora e aponte
-  # para ele, por exemplo `models/all-MiniLM-L6-v2`.
+  # baixar do HuggingFace: baixe os arquivos do modelo por fora e aponte para
+  # a pasta, por exemplo `models/all-MiniLM-L6-v2`. O caminho e resolvido
+  # contra a raiz do projeto (onde esta o config), nao contra o diretorio de
+  # onde voce chamou o comando.
+  #
+  # Pasta existente vence o ID do Hub com o mesmo nome. A identidade gravada
+  # no banco continua sendo este valor do config, nao o caminho absoluto,
+  # para o banco nao invalidar se voce mover o projeto.
   embedding_model: sentence-transformers/all-MiniLM-L6-v2
   # Similaridade de cosseno minima para reusar uma imagem do banco.
   # 0.82 e conservador. Abaixo de ~0.75 comeca a reusar imagem que nao
   # ilustra o trecho; acima de ~0.90 o reuso praticamente nao acontece e a
   # conta de geracao explode.
   similarity_threshold: 0.82
+
+# Retries por tipo de chamada. A assimetria nao e cosmetica:
+#
+# Criar uma predicao no provider NAO e idempotente. Se ela roda no servidor e
+# a resposta se perde no caminho, repetir gera uma segunda imagem e cobra duas
+# vezes — por isso `api_attempts` fica nos 3 do spec.
+#
+# Baixar um arquivo por URL e idempotente e de graca, entao pode insistir
+# muito mais. Numa conexao que corrompe TLS em transferencia sustentada, 3
+# tentativas dao ~50% de chance de perder um run de 20 imagens; 6 derrubam
+# isso para ~3%. Suba se a sua conexao for pior.
+network:
+  api_attempts: 3
+  download_attempts: 6
+  base_delay_seconds: 1.0
 
 budget:
   # Teto por video. R$ 200/mes / 8 videos = R$ 25/video ~= USD 4.60.
@@ -108,6 +161,11 @@ budget:
 
 # Provider de imagem. `active` escolhe a implementacao; as demais ficam
 # inertes. Trocar de provider e trocar esta linha.
+#
+# `active: none` desliga a geracao: o pipeline usa so o banco e o stock
+# gratuito, e o que nenhum dos dois resolver recebe o fallback de cor solida.
+# E a configuracao para rodar sem conta de geracao — custo zero de imagem, ao
+# preco de nao poder ilustrar conceito especifico.
 image_provider:
   active: replicate
   replicate:
@@ -195,7 +253,9 @@ render:
     canvas_scale: 2
 
 subtitles:
-  enabled: true
+  # Desligada: o video final nao leva legenda queimada. Ponha `true` se
+  # quiser, que o resto do estilo abaixo ja esta calibrado.
+  enabled: false
   font_name: Inter
   font_size: 54
   primary_color: "&H00FFFFFF"    # ASS usa &HAABBGGRR

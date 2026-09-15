@@ -16,6 +16,9 @@ class AnthropicConfig(BaseModel):
     max_tokens: int = 16000
     timeout_seconds: float = 900.0
     max_attempts: int = 3
+    # Fase 1 do planejamento: uma chamada a mais que le a transcricao inteira
+    # e devolve o briefing visual do video, antes de a fase 2 decidir cortes.
+    two_phase: bool = True
 
 
 class EditorialConfig(BaseModel):
@@ -38,11 +41,50 @@ class TranscribeConfig(BaseModel):
     vad_filter: bool = True
 
 
+class TrimConfig(BaseModel):
+    """Corte seco de pausa longa e hesitacao.
+
+    A lista de `fillers` NAO e aplicada por texto puro. "e" e a 3a pessoa de
+    "ser" e "um" e artigo: cortar por token destruiria frases inteiras. Todo
+    candidato precisa passar tambem pela duracao minima E pelo silencio ao
+    redor, que e o que distingue hesitacao de palavra em fala corrida.
+    """
+
+    enabled: bool = True
+    pause_min_seconds: float = 0.8
+    filler_min_seconds: float = 0.40
+    filler_silence_seconds: float = 0.25
+    # Deixado em cada ponta do corte, para a emenda nao soar cortada rente.
+    keep_margin_seconds: float = 0.12
+    # Trecho mantido menor que isso e absorvido em vez de virar fragmento.
+    min_keep_seconds: float = 0.35
+    fillers: list[str] = Field(
+        default_factory=lambda: [
+            "e", "eh", "ehh", "ah", "ahn", "ahm", "a",
+            "hm", "hmm", "hum", "uhm", "um", "mm", "mmm", "uh",
+        ]
+    )
+
+
 class BankConfig(BaseModel):
     db_path: str
     images_dir: str
     embedding_model: str
     similarity_threshold: float
+
+
+class NetworkConfig(BaseModel):
+    """Retries por tipo de chamada.
+
+    A distincao nao e cosmetica. Criar uma predicao no provider NAO e
+    idempotente: se ela roda no servidor e a resposta se perde, repetir gera
+    uma segunda imagem e cobra duas vezes. Ja baixar um arquivo por URL e
+    idempotente e de graca, entao pode insistir muito mais.
+    """
+
+    api_attempts: int = 3
+    download_attempts: int = 6
+    base_delay_seconds: float = 1.0
 
 
 class BudgetConfig(BaseModel):
@@ -87,6 +129,8 @@ class RenderConfig(BaseModel):
     fps: float = 30.0
     crf: int = 20
     preset: str = "medium"
+    # Usado so quando ha corte: sem corte o audio sai por stream copy.
+    audio_bitrate_kbps: int = 192
     crossfade_seconds: float = 0.4
     solid_fallback_color: str = "0x1B2A33"
     max_filtergraph_chars: int = 3000
@@ -113,10 +157,12 @@ class Config(BaseModel):
     anthropic: AnthropicConfig
     editorial: EditorialConfig
     transcribe: TranscribeConfig = Field(default_factory=TranscribeConfig)
+    trim: TrimConfig = Field(default_factory=TrimConfig)
     bank: BankConfig
     budget: BudgetConfig
     image_provider: ImageProviderConfig
     stock: StockConfig
+    network: NetworkConfig = Field(default_factory=NetworkConfig)
     render: RenderConfig = Field(default_factory=RenderConfig)
     subtitles: SubtitlesConfig = Field(default_factory=SubtitlesConfig)
 

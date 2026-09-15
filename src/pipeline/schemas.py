@@ -65,12 +65,129 @@ class Transcript(BaseModel):
 
 
 # --------------------------------------------------------------------------
+# 2b. trim -> trim.json
+#
+# O corte muda a linha de tempo, entao este estagio tambem devolve o
+# transcript remapeado. Tudo a jusante trabalha na timeline nova e nao precisa
+# saber que houve corte.
+# --------------------------------------------------------------------------
+
+
+class Cut(BaseModel):
+    start: float                 # tempo na ENTRADA original
+    end: float
+    reason: Literal["pause", "filler"]
+    token: str = ""              # so para filler: a palavra removida
+    context: str = ""            # texto ao redor, para voce revisar o corte
+
+    @property
+    def duration(self) -> float:
+        return self.end - self.start
+
+
+class KeepRange(BaseModel):
+    start: float                 # tempo na ENTRADA original
+    end: float
+
+    @property
+    def duration(self) -> float:
+        return self.end - self.start
+
+
+class TrimStats(BaseModel):
+    original_seconds: float
+    trimmed_seconds: float
+    removed_seconds: float
+    removed_ratio: float
+    n_cuts: int
+    n_pause_cuts: int
+    n_filler_cuts: int
+
+
+class TrimPlan(BaseModel):
+    input_hash: str              # digest do transcript + regras de corte
+    enabled: bool
+    keep: list[KeepRange]
+    cuts: list[Cut]
+    stats: TrimStats
+
+    def map_time(self, original: float) -> float:
+        """Converte um instante da entrada para a timeline cortada."""
+        elapsed = 0.0
+        for span in self.keep:
+            if original < span.start:
+                return elapsed
+            if original <= span.end:
+                return elapsed + (original - span.start)
+            elapsed += span.duration
+        return elapsed
+
+    def original_time(self, trimmed: float) -> float:
+        """O inverso: um instante da saida de volta para a entrada.
+
+        O render precisa dos dois sentidos. Os trechos a manter vivem no
+        tempo da ENTRADA; a EDL, os overlays e os chunks vivem no tempo
+        CORTADO. Sem o inverso nao ha como saber que janela da entrada um
+        chunk precisa ler.
+        """
+        elapsed = 0.0
+        for span in self.keep:
+            if trimmed <= elapsed + span.duration:
+                return span.start + (trimmed - elapsed)
+            elapsed += span.duration
+        return self.keep[-1].end if self.keep else trimmed
+
+    def keep_within(self, first: float, last: float) -> list[tuple[float, float]]:
+        """Trechos a manter que um chunk de [first, last) da saida precisa.
+
+        Devolvidos em tempo local da janela de entrada que o chunk vai abrir,
+        que e o que as expressoes de `trim` esperam depois do `-ss`.
+        """
+        window_start = self.original_time(first)
+        window_end = self.original_time(last)
+        local: list[tuple[float, float]] = []
+        for span in self.keep:
+            lo, hi = max(span.start, window_start), min(span.end, window_end)
+            if hi > lo:
+                local.append((lo - window_start, hi - window_start))
+        return local
+
+
+# --------------------------------------------------------------------------
 # 3. plan -> edl.json
 #
 # O modelo devolve faixas de INDICE de segmento do transcript, nao tempos.
 # Assim "nunca cortar no meio de uma frase" deixa de ser uma regra que da
 # para violar: as fronteiras sao, por construcao, fronteiras de segmento.
 # --------------------------------------------------------------------------
+
+
+class Brief(BaseModel):
+    """Fase 1 do planejamento: o que o video e, antes de decidir cortes.
+
+    Existe porque as duas tarefas competiam na mesma resposta. Pedir na mesma
+    chamada "segmente a timeline" e "invente as imagens" fazia a segunda
+    sofrer: saiam cenas plausiveis para um video de criador genericamente, nao
+    para ESTE video.
+
+    O briefing define o vocabulario visual; cada `concept` continua ancorado
+    ao proprio trecho. Uma imagem que ilustra o tema geral mas nao o que esta
+    sendo dito naquele momento e pior que uma imagem generica — o espectador
+    sente o descolamento.
+    """
+
+    subject: str = Field(description="do que o video trata, em uma frase")
+    argument: str = Field(description="o argumento central que ele defende, em uma frase")
+    audience_takeaway: str = Field(description="o que o espectador leva embora")
+    visual_vocabulary: list[str] = Field(
+        description="6 a 10 elementos visuais concretos em ingles (objetos, "
+                    "ambientes, materiais, tipo de luz) que atravessam o video "
+                    "inteiro e dao unidade as imagens"
+    )
+    avoid: list[str] = Field(
+        description="2 a 5 clices visuais em ingles a evitar neste video "
+                    "especifico, por serem obvios ou nao dizerem nada"
+    )
 
 
 class PlannedSpan(BaseModel):
@@ -130,6 +247,7 @@ class EDL(BaseModel):
     input_hash: str          # digest do transcript
     model: str
     attempts: int
+    brief: Brief | None = None
     duration: float
     segments: list[EDLSegment]
     stats: EDLStats

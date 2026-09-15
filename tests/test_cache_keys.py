@@ -111,3 +111,10 @@ def test_edl_diferente_invalida_os_assets(transcript, config):
     b = build(alternating(aroll_len=5, broll_len=5), transcript,
               model="claude-opus-5", attempts=1)
     assert assets_key(a, config) != assets_key(b, config)
+
+
+def test_ligar_o_briefing_invalida_a_edl(transcript, config):
+    """O briefing muda os concepts, entao mexer nele tem que refazer a EDL."""
+    other = config.model_copy(deep=True)
+    other.anthropic.two_phase = not config.anthropic.two_phase
+    assert plan_key(transcript, config) != plan_key(transcript, other)

@@ -33,6 +33,7 @@ config troca o motor.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -61,6 +62,12 @@ class Chunk:
     start: float                     # tempo global
     end: float                       # tempo global
     overlays: list[Overlay] = field(default_factory=list)
+    # Trechos da ENTRADA a manter, em tempo local da janela. Vazio = sem corte.
+    keep: list[tuple[float, float]] = field(default_factory=list)
+    # A janela da ENTRADA que este chunk abre. Com corte, ela e maior que
+    # [start, end), porque aqueles sao tempos da saida.
+    input_start: float | None = None
+    input_duration: float | None = None
 
     @property
     def duration(self) -> float:
@@ -172,13 +179,51 @@ def prep_size(cfg: RenderConfig) -> tuple[int, int]:
     return width, height
 
 
-def build_graph(chunk: Chunk, cfg: RenderConfig, subtitle_path: Path | None) -> str:
+def video_trim_chain(keep: list[tuple[float, float]]) -> str:
+    """Corta e reemenda os trechos da trilha de VIDEO, devolvendo `[cut]`.
+
+    Os tempos precisam chegar ja alinhados ao grid de frames. `atrim` corta
+    audio por amostra e `trim` corta video por frame: em tempo arbitrario,
+    cada corte deixa ate um frame de diferenca entre as trilhas — medido,
+    24ms de dessincronia acumulada em 20 cortes. Alinhado, zero.
+    """
+    n = len(keep)
+    parts = "".join(
+        f"[0:v]trim=start={a:.6f}:end={b:.6f},setpts=PTS-STARTPTS[t{i}];"
+        for i, (a, b) in enumerate(keep)
+    )
+    return parts + "".join(f"[t{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=0[cut]"
+
+
+def audio_trim_chain(keep: list[tuple[float, float]]) -> str:
+    """O mesmo para a trilha de AUDIO, devolvendo `[aout]`.
+
+    Roda num passe proprio, sem decodificar video: o audio e cortado e
+    encodado exatamente uma vez, e os chunks de video seguem sendo `-an`.
+    """
+    n = len(keep)
+    parts = "".join(
+        f"[0:a]atrim=start={a:.6f}:end={b:.6f},asetpts=PTS-STARTPTS[s{i}];"
+        for i, (a, b) in enumerate(keep)
+    )
+    return parts + "".join(f"[s{i}]" for i in range(n)) + f"concat=n={n}:v=0:a=1[aout]"
+
+
+def build_graph(
+    chunk: Chunk, cfg: RenderConfig, subtitle_path: Path | None
+) -> str:
     """Monta o filtergraph do chunk. Entrada 0 = video base; 1..N = overlays."""
     parts: list[str] = []
 
+    if chunk.keep:
+        parts.append(video_trim_chain(chunk.keep))
+        base_source = "[cut]"
+    else:
+        base_source = "[0:v]"
+
     # base: normaliza resolucao, aspecto e cadencia
     parts.append(
-        f"[0:v]scale={cfg.width}:{cfg.height}:flags=bicubic,setsar=1,"
+        f"{base_source}scale={cfg.width}:{cfg.height}:flags=bicubic,setsar=1,"
         f"fps={cfg.fps:g},format=yuv420p[base0]"
     )
 
@@ -217,8 +262,17 @@ def build_graph(chunk: Chunk, cfg: RenderConfig, subtitle_path: Path | None) -> 
 
 
 def build_inputs(chunk: Chunk, source: Path, cfg: RenderConfig) -> list[str]:
-    """Argumentos de entrada do ffmpeg, na ordem que o filtergraph espera."""
-    args = ["-ss", f"{chunk.start:.3f}", "-t", f"{chunk.duration:.3f}", "-i", str(source)]
+    """Argumentos de entrada do ffmpeg, na ordem que o filtergraph espera.
+
+    A janela lida da entrada nao e [start, end) do chunk quando ha corte:
+    aqueles sao tempos da SAIDA, e a entrada precisa cobrir tambem o que vai
+    ser descartado no meio.
+    """
+    window_start = chunk.input_start if chunk.input_start is not None else chunk.start
+    window_duration = (
+        chunk.input_duration if chunk.input_duration is not None else chunk.duration
+    )
+    args = ["-ss", f"{window_start:.3f}", "-t", f"{window_duration:.3f}", "-i", str(source)]
     for overlay in chunk.overlays:
         if overlay.image_path is None:
             args += [
@@ -242,6 +296,7 @@ def plan_chunks(
     overlays: list[Overlay],
     duration: float,
     cfg: RenderConfig,
+    window: Callable[[float, float], tuple[float, float, list[tuple[float, float]]]] | None = None,
 ) -> list[Chunk]:
     """Divide a timeline em chunks cujo filtergraph cabe no limite do config.
 
@@ -249,10 +304,16 @@ def plan_chunks(
     dentro do proprio segmento de b-roll, nenhuma transicao atravessa a
     fronteira de um chunk — o corte acontece em a-roll puro.
     """
-    if not overlays:
-        return [Chunk(index=0, start=0.0, end=duration)]
+    def finish(chunk: Chunk) -> Chunk:
+        """Preenche a janela de entrada e os trechos a manter do chunk."""
+        if window is not None:
+            chunk.input_start, chunk.input_duration, chunk.keep = window(chunk.start, chunk.end)
+        return chunk
 
-    single = Chunk(index=0, start=0.0, end=duration, overlays=_localize(overlays, 0.0))
+    if not overlays:
+        return [finish(Chunk(index=0, start=0.0, end=duration))]
+
+    single = finish(Chunk(index=0, start=0.0, end=duration, overlays=_localize(overlays, 0.0)))
     if len(build_graph(single, cfg, Path("subs.ass"))) <= cfg.max_filtergraph_chars:
         return [single]
 
@@ -262,19 +323,22 @@ def plan_chunks(
 
     for overlay in overlays:
         candidate = batch + [overlay]
-        probe = Chunk(index=len(chunks), start=chunk_start,
-                      end=candidate[-1].end, overlays=_localize(candidate, chunk_start))
+        probe = finish(Chunk(index=len(chunks), start=chunk_start,
+                             end=candidate[-1].end,
+                             overlays=_localize(candidate, chunk_start)))
         too_long = len(build_graph(probe, cfg, Path("subs.ass"))) > cfg.max_filtergraph_chars
         if too_long and batch:
-            chunks.append(Chunk(index=len(chunks), start=chunk_start, end=overlay.start,
-                                overlays=_localize(batch, chunk_start)))
+            chunks.append(finish(Chunk(
+                index=len(chunks), start=chunk_start, end=overlay.start,
+                overlays=_localize(batch, chunk_start))))
             chunk_start = overlay.start
             batch = [overlay]
         else:
             batch = candidate
 
-    chunks.append(Chunk(index=len(chunks), start=chunk_start, end=duration,
-                        overlays=_localize(batch, chunk_start)))
+    chunks.append(finish(Chunk(
+        index=len(chunks), start=chunk_start, end=duration,
+        overlays=_localize(batch, chunk_start))))
     return chunks
 
 

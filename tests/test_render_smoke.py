@@ -298,3 +298,72 @@ def test_segmento_sem_imagem_renderiza_cor_solida(smoke_config, media):
 
     assert float(ffprobe(output, "format=duration")) == pytest.approx(DURATION, abs=0.05)
     assert audio_md5(output) == audio_md5(media["source"])
+
+
+# --------------------------------------------------------------------------
+# corte seco
+# --------------------------------------------------------------------------
+
+
+def test_corte_preserva_sincronia_audio_video(smoke_config, media):
+    """A propriedade que o corte nao pode quebrar.
+
+    `atrim` corta audio por amostra e `trim` corta video por frame: em tempo
+    nao alinhado, cada corte deixa ate um frame de diferenca. Medido com 20
+    cortes: 24ms de deriva. Os trechos mantidos vem alinhados ao grid de
+    frames justamente para isso dar zero.
+    """
+    from pipeline.filtergraph import Chunk, audio_trim_chain, build_graph, build_inputs
+    from pipeline.schemas import KeepRange, TrimPlan, TrimStats
+
+    fps = smoke_config.render.fps
+    keep = [(round(a * fps) / fps, round(b * fps) / fps)
+            for a, b in [(0, 4), (5.5, 12), (13.7, DURATION)]]
+    trimmed = sum(b - a for a, b in keep)
+
+    plan = TrimPlan(
+        input_hash="h", enabled=True, cuts=[],
+        keep=[KeepRange(start=a, end=b) for a, b in keep],
+        stats=TrimStats(original_seconds=DURATION, trimmed_seconds=trimmed,
+                        removed_seconds=DURATION - trimmed,
+                        removed_ratio=(DURATION - trimmed) / DURATION,
+                        n_cuts=2, n_pause_cuts=2, n_filler_cuts=0),
+    )
+
+    manifest, transcript, edl, assets = make_artifacts(smoke_config, media, n_broll=1)
+    work = smoke_config.work_dir / manifest.slug
+    work.mkdir(parents=True, exist_ok=True)
+
+    chunk = Chunk(0, 0.0, trimmed, [], keep=plan.keep_within(0.0, trimmed),
+                  input_start=0.0, input_duration=DURATION)
+    graph = build_graph(chunk, smoke_config.render, None)
+
+    video = work / "tv.mp4"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y",
+         *build_inputs(chunk, media["source"], smoke_config.render),
+         "-filter_complex", graph.replace(";\n", ";"), "-map", "[vout]", "-an",
+         "-c:v", "libx264", "-crf", "35", "-preset", "ultrafast",
+         "-r", f"{fps:g}", str(video)],
+        check=True, capture_output=True,
+    )
+    audio = work / "ta.m4a"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-i", str(media["source"]), "-vn",
+         "-filter_complex", audio_trim_chain(keep), "-map", "[aout]",
+         "-c:a", "aac", "-b:a", "192k", str(audio)],
+        check=True, capture_output=True,
+    )
+    final = work / "cut.mp4"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-i", str(video), "-i", str(audio),
+         "-map", "0:v:0", "-map", "1:a:0", "-c", "copy", "-shortest", str(final)],
+        check=True, capture_output=True,
+    )
+
+    dur_v = float(ffprobe(final, "stream=duration").splitlines()[0])
+    dur_a = float(ffprobe(final, "stream=duration").splitlines()[1])
+
+    assert dur_v == pytest.approx(trimmed, abs=0.05), f"video {dur_v} != {trimmed}"
+    assert dur_a == pytest.approx(trimmed, abs=0.05), f"audio {dur_a} != {trimmed}"
+    assert abs(dur_v - dur_a) < 0.02, f"dessincronia de {abs(dur_v - dur_a) * 1000:.0f}ms"

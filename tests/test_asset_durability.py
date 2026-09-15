@@ -179,3 +179,62 @@ def test_dry_run_nao_precisa_do_embedder_com_banco_vazio(broken_bank, tmp_path, 
     assets = make_resolver(broken_bank, tmp_path).resolve(segments, dry_run=True)
     assert assets.dry_run is True
     assert assets.estimate.n_to_generate == 1
+
+
+# --------------------------------------------------------------------------
+# retries: download insiste mais que chamada que cobra
+# --------------------------------------------------------------------------
+
+
+def test_download_insiste_mais_que_a_api(config):
+    """Baixar por URL e idempotente e de graca, entao pode insistir. Criar
+    predicao cobra: se ela roda no servidor e a resposta se perde, repetir
+    gera uma segunda imagem e cobra duas vezes."""
+    assert config.network.download_attempts > config.network.api_attempts
+    assert config.network.api_attempts == 3      # o que o spec pede
+
+
+def test_download_grava_em_temporario_e_move_no_fim(tmp_path, monkeypatch, config):
+    """Escrever direto no destino deixaria arquivo truncado no lugar se a
+    conexao caisse no meio, e o resto do pipeline trataria como valido."""
+    import pipeline.providers as providers
+
+    destino = tmp_path / "img.png"
+    vistos = []
+
+    class Response:
+        def raise_for_status(self): pass
+        def iter_content(self, chunk_size):
+            # no meio do stream, o destino final ainda nao pode existir
+            vistos.append(destino.exists())
+            yield b"\x89PNG"
+            vistos.append(destino.exists())
+            yield b"-resto"
+
+    monkeypatch.setattr(providers.requests, "get", lambda *a, **k: Response())
+    providers._download(
+        "https://example.test/x.png", destino, timeout=5, network=config.network)
+
+    assert vistos == [False, False]          # nao apareceu antes de completar
+    assert destino.read_bytes() == b"\x89PNG-resto"
+    assert not destino.with_suffix(".png.part").exists()
+
+
+def test_temporario_e_limpo_quando_o_download_falha(tmp_path, monkeypatch, config):
+    import pipeline.providers as providers
+
+    destino = tmp_path / "img.png"
+
+    def sempre_falha(*a, **k):
+        raise OSError("[SSL: DECRYPTION_FAILED_OR_BAD_RECORD_MAC] bad record mac")
+
+    monkeypatch.setattr(providers.requests, "get", sempre_falha)
+    net = config.network.model_copy()
+    net.download_attempts = 2
+    net.base_delay_seconds = 0.0
+
+    with pytest.raises(RuntimeError):
+        providers._download("https://example.test/x.png", destino, timeout=5, network=net)
+
+    assert not destino.exists()
+    assert not destino.with_suffix(".png.part").exists()

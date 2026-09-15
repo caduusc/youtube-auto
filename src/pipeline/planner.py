@@ -20,7 +20,7 @@ import anthropic
 from .config import AnthropicConfig, EditorialConfig, require_key
 from .edl import Budget, budget_for, build, resolve, validate
 from .log import log
-from .schemas import EDL, PlannedEDL, Transcript
+from .schemas import EDL, Brief, PlannedEDL, Transcript
 from .util import with_retries
 
 SYSTEM_PROMPT = """\
@@ -57,6 +57,15 @@ segmento do transcript. As faixas precisam:
 
 ## Como escrever o `concept`
 
+Voce recebeu um briefing visual do video. Use o `visual_vocabulary` dele como
+paleta: as cenas devem sair daquele repertorio, para o conjunto ter unidade.
+Nao repita elemento em dois b-rolls seguidos, e nao use nada do `avoid`.
+
+O briefing define o VOCABULARIO; cada cena continua ancorada ao proprio
+trecho. Uma imagem que ilustra o tema geral do video mas nao o que esta sendo
+dito naquele momento e pior que uma imagem generica: o espectador sente o
+descolamento entre o que ouve e o que ve.
+
 Em ingles, uma cena concreta e estatica que uma imagem unica consegue mostrar.
 A imagem vai receber um movimento lento de camera, entao descreva um quadro,
 nao uma acao.
@@ -71,6 +80,34 @@ nao uma acao.
 
 `concept_tags`: de 2 a 4 palavras-chave em ingles, que descrevam a cena de
 forma generica o suficiente para achar algo parecido num banco de fotos.
+"""
+
+
+BRIEF_PROMPT = """\
+Voce vai ler a transcricao inteira de um video e devolver um briefing visual.
+Nao decida cortes nem tempos aqui: isso vem depois, numa segunda etapa.
+
+O objetivo do briefing e dar UNIDADE as imagens do video. Sem ele, cada trecho
+recebe uma imagem plausivel isoladamente e o conjunto parece um banco de fotos
+sorteado.
+
+## O que preencher
+
+- `subject` e `argument`: do que o video trata e o que ele defende. Seja
+  especifico ao video, nao ao tema. "produtividade" nao serve; "por que
+  metodo de produtividade falha quando a pessoa nao tem clareza do objetivo"
+  serve.
+- `audience_takeaway`: o que a pessoa leva embora depois de ouvir.
+- `visual_vocabulary`: de 6 a 10 elementos visuais CONCRETOS em ingles que
+  possam atravessar o video inteiro — objetos, ambientes, materiais, tipo de
+  luz. Eles sao o que faz imagens geradas em chamadas independentes parecerem
+  do mesmo video. Prefira o concreto e o duradouro ("a worn leather notebook
+  on a wooden table") ao abstrato e ao datado ("futuristic technology").
+- `avoid`: de 2 a 5 clices visuais em ingles a evitar NESTE video, por serem
+  obvios ou nao dizerem nada. Se o video fala de decisao, "chessboard" e
+  provavelmente um desses.
+
+Nada de texto, letreiro ou rosto em primeiro plano em nenhuma sugestao.
 """
 
 
@@ -96,7 +133,59 @@ def system_prompt(rules: EditorialConfig) -> str:
     )
 
 
-def first_request(transcript: Transcript, budget: Budget) -> str:
+def write_brief(
+    transcript: Transcript, *, config: AnthropicConfig, client: anthropic.Anthropic
+) -> Brief:
+    """Fase 1: le a transcricao inteira e devolve o briefing visual."""
+    response = with_retries(
+        lambda: client.with_options(timeout=config.timeout_seconds).messages.parse(
+            model=config.model,
+            max_tokens=config.max_tokens,
+            system=[{"type": "text", "text": BRIEF_PROMPT,
+                     "cache_control": {"type": "ephemeral"}}],
+            messages=[{"role": "user", "content": [{
+                "type": "text",
+                "text": f"Transcricao completa:\n\n{format_transcript(transcript)}",
+                "cache_control": {"type": "ephemeral"},
+            }]}],
+            output_format=Brief,
+            output_config={"effort": config.effort},
+        ),
+        label=f"anthropic brief {config.model}",
+    )
+
+    if response.stop_reason == "refusal":
+        raise PlanningFailed(
+            "a API recusou o briefing "
+            f"(categoria: {getattr(response.stop_details, 'category', None)})"
+        )
+    if response.stop_reason == "max_tokens":
+        raise PlanningFailed(
+            f"o briefing foi truncado em max_tokens={config.max_tokens}"
+        )
+
+    brief: Brief = response.parsed_output
+    log("plan.brief", subject=brief.subject[:70],
+        vocabulary=len(brief.visual_vocabulary), avoid=len(brief.avoid),
+        input_tokens=response.usage.input_tokens,
+        output_tokens=response.usage.output_tokens)
+    return brief
+
+
+def brief_block(brief: Brief) -> str:
+    """O briefing como texto, para entrar no pedido da fase 2."""
+    return (
+        "Briefing visual deste video:\n"
+        f"- assunto: {brief.subject}\n"
+        f"- argumento: {brief.argument}\n"
+        f"- o que o espectador leva: {brief.audience_takeaway}\n"
+        f"- vocabulario visual (use como paleta): "
+        f"{', '.join(brief.visual_vocabulary)}\n"
+        f"- evitar neste video: {', '.join(brief.avoid)}"
+    )
+
+
+def first_request(transcript: Transcript, budget: Budget, brief: Brief | None = None) -> str:
     """O pedido, com as regras ja resolvidas em numeros absolutos.
 
     Sem isso o modelo recebe so as regras relativas ("3 trocas por minuto") e
@@ -105,14 +194,18 @@ def first_request(transcript: Transcript, budget: Budget) -> str:
     tateando em vez de escolhendo onde cortar.
     """
     segment_avg = transcript.duration / max(1, len(transcript.segments))
-    return (
+    header = (
         f"Duracao do video: {transcript.duration:.1f}s "
         f"({transcript.duration / 60:.1f} min), {len(transcript.segments)} segmentos "
         f"(indices 0 a {len(transcript.segments) - 1}, "
-        f"~{segment_avg:.1f}s cada em media).\n\n"
-        f"{budget.as_prompt()}\n\n"
-        f"Transcript:\n\n{format_transcript(transcript)}"
+        f"~{segment_avg:.1f}s cada em media)."
     )
+    blocks = [header]
+    if brief is not None:
+        blocks.append(brief_block(brief))
+    blocks.append(budget.as_prompt())
+    blocks.append(f"Transcript:\n\n{format_transcript(transcript)}")
+    return "\n\n".join(blocks)
 
 
 def retry_request(errors: list[str]) -> str:
@@ -130,6 +223,7 @@ def plan(
     config: AnthropicConfig,
     rules: EditorialConfig,
     client: anthropic.Anthropic | None = None,
+    two_phase: bool = True,
 ) -> EDL:
     # Recusa de graca o video em que nenhuma EDL valida existe, antes de
     # gastar 3 tentativas de Opus descobrindo isso.
@@ -149,13 +243,15 @@ def plan(
     if client is None:
         client = anthropic.Anthropic(api_key=require_key(config.env, "planejamento editorial"))
 
+    brief = write_brief(transcript, config=config, client=client) if two_phase else None
+
     # O transcript e a parte grande e estavel do prompt: entre tentativas ele
     # nao muda, entao vale o breakpoint de cache.
     messages: list[dict] = [{
         "role": "user",
         "content": [{
             "type": "text",
-            "text": first_request(transcript, budget),
+            "text": first_request(transcript, budget, brief),
             "cache_control": {"type": "ephemeral"},
         }],
     }]
@@ -206,6 +302,7 @@ def plan(
 
         if not errors:
             edl = build(planned, transcript, model=config.model, attempts=attempt)
+            edl.brief = brief
             log("plan.valid", broll_ratio=f"{edl.stats.broll_ratio:.0%}",
                 switches_per_min=f"{edl.stats.switches_per_minute:.1f}",
                 n_broll=edl.stats.n_broll, n_aroll=edl.stats.n_aroll)

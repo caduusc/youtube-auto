@@ -10,10 +10,11 @@ no estágio 5, rodar de novo retoma do 5 sem refazer transcrição nem regerar
 imagem.
 
 ```
-ingest ──> transcribe ──> plan ──> assets ──> render ──> report
-  │             │           │         │          │          │
-manifest    transcript     edl     assets    final.mp4   report
- .json        .json       .json     .json                 .json
+ingest ─> transcribe ─> trim ─> plan ─> assets ─> render ─> report
+   │           │          │       │        │         │         │
+manifest  transcript    trim     edl    assets   final.mp4  report
+  .json      .json      .json   .json    .json               .json
+                          └─ transcript.trimmed.json
 ```
 
 ## Setup
@@ -56,8 +57,21 @@ ordem de eficácia:
    é a causa mais comum;
 3. `hf download <modelo>` repetido até completar, já que cada tentativa retoma
    de onde parou;
-4. baixar o repositório do modelo pelo navegador e apontar
-   `bank.embedding_model` para a pasta local — o campo aceita caminho.
+4. baixar os arquivos do modelo pelo navegador e apontar
+   `bank.embedding_model` para a pasta local — o campo aceita caminho,
+   resolvido contra a raiz do projeto.
+
+Para o item 4 com `all-MiniLM-L6-v2`, são 10 arquivos (~91MB): `config.json`,
+`config_sentence_transformers.json`, `modules.json`, `sentence_bert_config.json`,
+`special_tokens_map.json`, `model.safetensors`, `tokenizer.json`,
+`tokenizer_config.json`, `vocab.txt` e `1_Pooling/config.json`. **Não** baixe
+`pytorch_model.bin` nem `rust_model.ot` — são os mesmos pesos em outros
+formatos. Verifique a pasta antes de rodar o pipeline:
+
+```bash
+uv run python -c "from sentence_transformers import SentenceTransformer; \
+  print(SentenceTransformer('models/all-MiniLM-L6-v2').encode('teste')[:4])"
+```
 
 O estágio 4 distingue os dois modos de falha e imprime essa lista quando o
 erro é de TLS.
@@ -79,7 +93,7 @@ de onde cada chave é lida.
 | Variável | Para quê | Sem ela |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | estágio 3, planejamento editorial | o pipeline não roda |
-| `REPLICATE_API_TOKEN` | estágio 4, geração de imagem | `--dry-run` funciona; o run real falha |
+| `REPLICATE_API_TOKEN` | estágio 4, geração de imagem | `--dry-run` funciona; o run real falha, a menos que você ponha `image_provider.active: none` |
 | `PEXELS_API_KEY` | estágio 4, stock gratuito | tudo que seria stock vai para geração, e a conta sobe |
 
 ```bash
@@ -136,6 +150,36 @@ graça pelo banco.
 ```bash
 uv run pipeline bank prune --unused-days 90
 ```
+
+## Conexão instável
+
+`network.download_attempts` (default 6) existe porque numa conexão que
+corrompe TLS em transferência sustentada, as 3 tentativas do spec dão ~50% de
+chance de perder um run de 20 imagens. Seis derrubam para ~3%.
+
+A assimetria com `api_attempts` (3) é deliberada: baixar por URL é idempotente
+e de graça, mas criar uma predicação no provider **cobra** — se ela roda no
+servidor e a resposta se perde, repetir gera uma segunda imagem e cobra duas
+vezes.
+
+Downloads escrevem num `.part` e só movem para o destino ao completar, então
+uma queda no meio não deixa arquivo truncado que o resto do pipeline trataria
+como imagem válida.
+
+## Rodando sem conta de geração
+
+Se você não tem crédito no Replicate, `image_provider.active: none` no config
+faz o pipeline usar só o banco e o stock gratuito. O que nenhum dos dois
+resolver recebe o fallback de cor sólida, e o vídeo sai — custo de imagem
+zero.
+
+O limite é real: stock só cobre cena genérica. Um `concept` específico
+("a chessboard mid-game beside a window") não existe em banco de fotos, e
+aquele segmento vira um retângulo de cor. Serve para validar o pipeline
+inteiro e para vídeo cujo b-roll é todo genérico; não substitui geração.
+
+Ampliar `stock.generic_tags` é o que aumenta a cobertura nesse modo: cada tag
+que casa é um segmento que sai do Pexels em vez de virar cor sólida.
 
 ## Orçamento
 
@@ -243,6 +287,52 @@ validada por tolerância sobre tempos. Em vez disso, o modelo devolve faixas
 de **índice de segmento do transcript**, e o pipeline deriva os tempos. A
 fronteira passa a ser, por construção, fronteira de segmento: cortar no meio
 de uma frase deixa de ser representável.
+
+### O corte seco e a regra que mais importa é negativa
+
+O estágio `trim` remove pausa longa e hesitação. Em português, vários sons de
+hesitação são palavras de conteúdo: **"é" é a 3ª pessoa de "ser"** e "um" é
+artigo. Cortar por token destruiria frases.
+
+Todo candidato passa por três testes ao mesmo tempo: estar na lista de
+`fillers`, durar acima do mínimo, e ter silêncio dos **dois** lados. Exigir os
+dois lados em vez de um é o que protege a pausa retórica — em *"o problema
+é... que ninguém olha"*, a pausa depois do verbo bastaria para marcá-lo como
+hesitação se um lado fosse suficiente.
+
+Os cortes são listados com o texto ao redor no `--dry-run` e em `trim.json`.
+Sem isso o corte é caixa preta: você vê 12% de redução e não tem como saber
+se uma pausa que dava peso a uma frase foi embora.
+
+**O alinhamento a frame não é cosmético.** `atrim` corta áudio por amostra e
+`trim` corta vídeo por frame: em tempo arbitrário, cada corte deixa até um
+frame de diferença entre as trilhas. Medido com 20 cortes não alinhados: 24ms
+de dessincronia acumulada. Com os trechos alinhados ao grid: zero.
+
+Com corte, o áudio deixa de ser byte a byte igual — ele é cortado nos mesmos
+instantes do vídeo, o que preserva a sincronia labial, e encodado uma vez. O
+invariante passa a ser "cortado nos pontos escolhidos e nunca processado de
+outra forma": sem normalização, sem compressão, sem filtro. Com
+`trim.enabled: false`, volta ao stream copy.
+
+### O planejamento tem duas fases
+
+A fase 1 lê a transcrição inteira e devolve um briefing visual: assunto,
+argumento, vocabulário visual e clichês a evitar. A fase 2 monta a EDL
+escolhendo dentro daquele vocabulário.
+
+Existe porque as duas tarefas competiam na mesma resposta. Pedir na mesma
+chamada "segmente a timeline" e "invente as imagens" fazia a segunda sofrer:
+saíam cenas plausíveis para um vídeo de criador genericamente, não para
+*este* vídeo.
+
+O briefing define o **vocabulário**; cada `concept` continua ancorado ao
+próprio trecho. Uma imagem que ilustra o tema geral mas não o que está sendo
+dito naquele momento é pior que uma imagem genérica — o espectador sente o
+descolamento entre o que ouve e o que vê.
+
+Custa uma chamada a mais por vídeo, uns US$ 0,05. `anthropic.two_phase:
+false` volta ao passe único.
 
 ### As regras editoriais interagem de um jeito que não é óbvio
 
