@@ -265,7 +265,12 @@ def test_duracoes_dos_chunks_somam_a_duracao_original(smoke_config, media):
 
 
 def test_legenda_e_deslocada_por_chunk(smoke_config, media):
-    """A legenda do chunk 1 comeca em zero, nao no tempo global."""
+    """A legenda do chunk 1 comeca em zero, nao no tempo global.
+
+    Liga a legenda explicitamente: o config de exemplo a deixa desligada, e
+    um teste do comportamento da legenda nao pode depender desse default.
+    """
+    smoke_config.subtitles.enabled = True
     manifest, output = run_render(smoke_config, media, max_chars=600)
     work = smoke_config.work_dir / manifest.slug
     second = (work / "subs_001.ass").read_text()
