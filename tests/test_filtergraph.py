@@ -127,9 +127,19 @@ def test_motor_zoompan_disponivel_como_escape_hatch(config):
     render = config.render.model_copy(deep=True)
     render.ken_burns.engine = "zoompan"
     chain = ken_burns_chain(overlay(0, 20, "zoom_in"), render)
-    assert chain.startswith("zoompan=")
+    assert "zoompan=" in chain
     assert "d=600" in chain          # 20s * 30fps
     assert "s=1920x1080" in chain
+
+
+def test_zoompan_recebe_um_frame_so(config):
+    """O `d` do zoompan conta frames de SAIDA por frame de ENTRADA, e a
+    entrada e uma imagem em `-loop 1`. Sem o select, um segmento de 20s a
+    30fps entrega 600 frames de entrada e o zoompan devolve 600 varreduras."""
+    render = config.render.model_copy(deep=True)
+    render.ken_burns.engine = "zoompan"
+    chain = ken_burns_chain(overlay(0, 20, "zoom_in"), render)
+    assert chain.startswith("select='eq(n\\,0)',zoompan=")
 
 
 # --------------------------------------------------------------------------

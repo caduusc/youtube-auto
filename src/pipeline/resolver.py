@@ -35,8 +35,8 @@ class BudgetExceeded(RuntimeError):
 
     def __init__(self, estimate: AssetEstimate) -> None:
         super().__init__(
-            f"pior caso de USD {estimate.worst_case_usd:.2f} acima do teto de "
-            f"USD {estimate.budget_usd:.2f}"
+            f"pior caso de USD {estimate.worst_case_usd:.4f} acima do teto de "
+            f"USD {estimate.budget_usd:.4f}"
         )
         self.estimate = estimate
 
@@ -62,6 +62,7 @@ class AssetResolver:
         stock: PexelsStock | None,
         style_suffix: str,
         budget_usd: float,
+        cost_usd_per_image: float,
         images_dir: Path,
         image_extension: str = "png",
     ) -> None:
@@ -70,6 +71,9 @@ class AssetResolver:
         self.stock = stock
         self.style_suffix = style_suffix
         self.budget_usd = budget_usd
+        # O preco unitario vem do config, nao do provider: o --dry-run existe
+        # para estimar custo e precisa funcionar sem chave de API nenhuma.
+        self.cost_usd_per_image = cost_usd_per_image
         self.images_dir = Path(images_dir)
         self.image_extension = image_extension
 
@@ -109,7 +113,7 @@ class AssetResolver:
         return decisions
 
     def estimate(self, decisions: list[Decision]) -> AssetEstimate:
-        unit = self.provider.cost_usd_per_image if self.provider else 0.0
+        unit = self.cost_usd_per_image
         n_broll = len(decisions)
         n_generate = sum(1 for d in decisions if d.route == "generate")
         worst_case = n_broll * unit
@@ -143,7 +147,7 @@ class AssetResolver:
 
         items: list[AssetItem] = []
         spent = 0.0
-        unit = self.provider.cost_usd_per_image if self.provider else 0.0
+        unit = self.cost_usd_per_image
 
         for decision in decisions:
             if decision.route == "bank":

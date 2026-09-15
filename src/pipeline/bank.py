@@ -122,6 +122,13 @@ class AssetBank:
         nova — o espectador nota. Entre videos diferentes, reusar e o ponto.
         """
         exclude_ids = exclude_ids or set()
+
+        # Banco vazio nao tem o que comparar, e o embedder arrasta o torch:
+        # no primeiro video, e o que deixa o --dry-run responder na hora em
+        # vez de esperar 400MB de modelo carregar para nada.
+        if not self.conn.execute("SELECT 1 FROM assets LIMIT 1").fetchone():
+            return None
+
         target = self.embedder.embed(concept)
         best: tuple[Asset, float] | None = None
         for row in self.conn.execute("SELECT * FROM assets"):

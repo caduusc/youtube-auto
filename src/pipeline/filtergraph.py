@@ -11,17 +11,24 @@ o timing intacto, e cada imagem de b-roll e sobreposta por cima com fade de
 alpha na entrada e na saida. O fade das duas pontas e o crossfade nas duas
 direcoes, e a duracao nao muda.
 
-**Ken Burns sem `zoompan`.** O `zoompan` quantiza zoom e posicao em passos
-inteiros na resolucao de saida, o que produz tremor em movimento lento. Aqui
-o movimento e montado com dois filtros que o ffmpeg reavalia por frame:
-`scale` com `eval=frame` para o zoom e as expressoes x/y do `crop` para a
-translacao. Os dois trabalham numa tela de 2x a resolucao de saida, entao o
-passo de 1px vira meio pixel depois do downscale final — abaixo do limiar em
-que o olho pega o degrau.
+**Ken Burns sem `zoompan`.** O `zoompan` calcula o recorte em pixels
+inteiros, entao num movimento lento a janela anda 1px a cada N frames em vez
+de uma fracao de pixel por frame — e esse degrau e o tremor. Aqui o
+movimento sai de dois filtros que o ffmpeg reavalia por frame: `scale` com
+`eval=frame` para o zoom e as expressoes x/y do `crop` para a translacao.
+Ambos operam numa tela de 2x a resolucao de saida e o downscale para 1080p
+vem por ultimo, entao o passo de 1px vira meio pixel na saida.
+
+Medido com ffmpeg 6.1 num pan de 1.12 sobre 2s: 58 de 58 frames mudaram, com
+diferenca regular entre frames (coeficiente de variacao 0.05). Nao ha aqui
+uma medicao do `zoompan` tremendo — o caso que o provoca e mais lento que o
+que foi medido; o que sustenta a escolha e o mecanismo, nao um numero
+comparativo.
 
 Uma consequencia do `eval=frame`: o link de saida do `scale` muda de tamanho
-a cada frame e o `crop` seguinte reconfigura. Se a sua build de ffmpeg
-reclamar disso, `render.ken_burns.engine: zoompan` no config troca o motor.
+a cada frame e o `crop` seguinte reconfigura. Verificado funcionando no
+ffmpeg 6.1. Se a sua build reclamar, `render.ken_burns.engine: zoompan` no
+config troca o motor.
 """
 
 from __future__ import annotations
@@ -131,10 +138,18 @@ def ken_burns_chain(overlay: Overlay, cfg: RenderConfig) -> str:
 
 def _zoompan_chain(overlay, cfg: RenderConfig, z0: float, z1: float,
                    canvas_w: int, canvas_h: int) -> str:
-    """Escape hatch. Treme mais, mas nao depende de reconfiguracao por frame."""
+    """Escape hatch. Treme mais, mas nao depende de reconfiguracao por frame.
+
+    O `select` na frente nao e decorativo: o `d` do zoompan conta frames de
+    SAIDA por frame de ENTRADA, e a entrada aqui e uma imagem em `-loop 1`.
+    Sem o select, um segmento de 12s a 30fps entrega 360 frames de entrada e
+    o zoompan devolve 360 varreduras completas — 129.600 frames, com a
+    imagem praticamente parada em cada trecho de 360.
+    """
     frames = max(1, int(round(overlay.duration * cfg.fps)))
     zoom = f"{z0:.6f}+({z1 - z0:.6f})*on/{frames}"
     return (
+        f"select='eq(n\,0)',"
         f"zoompan=z='{zoom}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
         f":d={frames}:s={cfg.width}x{cfg.height}:fps={cfg.fps:g}"
     )
