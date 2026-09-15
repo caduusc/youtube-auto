@@ -88,6 +88,10 @@ bank:
   # sentido. O banco guarda qual modelo gerou cada linha e so compara dentro
   # do mesmo, entao o que acontece de fato e que os assets antigos param de
   # ser reusados e o `bank stats` mostra as duas familias.
+  #
+  # Aceita tambem o caminho de uma pasta local, se a sua rede nao consegue
+  # baixar do HuggingFace: baixe o repositorio do modelo por fora e aponte
+  # para ele, por exemplo `models/all-MiniLM-L6-v2`.
   embedding_model: sentence-transformers/all-MiniLM-L6-v2
   # Similaridade de cosseno minima para reusar uma imagem do banco.
   # 0.82 e conservador. Abaixo de ~0.75 comeca a reusar imagem que nao

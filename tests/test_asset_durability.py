@@ -66,6 +66,40 @@ def test_mensagem_do_warmup_diz_que_nada_foi_gasto(broken_bank):
     assert "HF_HUB_DISABLE_XET" in message   # o contorno no Windows
 
 
+class TLSBrokenEmbedder:
+    """Falha como a maquina real falhou: registros TLS corrompidos."""
+
+    model_name = "sentence-transformers/all-MiniLM-L6-v2"
+
+    def embed(self, text: str) -> list[float]:
+        raise OSError(
+            "[SSL: DECRYPTION_FAILED_OR_BAD_RECORD_MAC] decryption failed "
+            "or bad record mac (_ssl.c:2580)"
+        )
+
+
+def test_erro_de_tls_nao_recomenda_tentar_de_novo(broken_bank):
+    """TLS corrompido nao e transitorio: arquivo pequeno passa e
+    transferencia sustentada quebra. Mandar reexecutar e conselho ruim."""
+    broken_bank.embedder = TLSBrokenEmbedder()
+    with pytest.raises(RuntimeError) as excinfo:
+        broken_bank.warmup()
+    message = str(excinfo.value)
+
+    assert "TLS corrompido" in message
+    assert "Reexecutar nao" in message and "resolve" in message
+    assert "hf_transfer" in message        # outra pilha TLS
+    assert "antivirus" in message          # a causa mais comum
+    assert "pasta local" in message        # o escape garantido
+    assert "costuma ser transitorio" not in message
+
+
+def test_mensagem_nomeia_o_modelo_que_falhou(broken_bank):
+    broken_bank.embedder = TLSBrokenEmbedder()
+    with pytest.raises(RuntimeError, match="all-MiniLM-L6-v2"):
+        broken_bank.warmup()
+
+
 def test_warmup_passa_com_embedder_sadio(healthy_bank):
     healthy_bank.warmup()   # nao levanta
 

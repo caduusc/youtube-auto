@@ -60,6 +60,61 @@ def unpack(blob: bytes) -> array:
     return out
 
 
+# Assinaturas de TLS corrompido. Sao o caso em que "tente de novo" e
+# conselho ruim: o problema nao e transitorio, e algo no meio do caminho
+# quebrando os registros TLS — antivirus, VPN ou proxy inspecionando a
+# conexao. Arquivos pequenos passam; transferencia sustentada quebra.
+_TLS_MARKERS = (
+    "DECRYPTION_FAILED_OR_BAD_RECORD_MAC",
+    "BAD_RECORD_MAC",
+    "SSLError",
+    "record layer failure",
+)
+
+
+def _embedder_remedies(exc: Exception) -> str:
+    """Orientacao especifica para o modo de falha observado.
+
+    "Tente de novo" e conselho ruim para TLS corrompido: o problema nao e
+    transitorio. Arquivo pequeno passa, transferencia sustentada quebra.
+    """
+    text = f"{type(exc).__name__}: {exc}"
+
+    if any(marker in text for marker in _TLS_MARKERS):
+        return """\
+O erro e de TLS corrompido, nao falta de rede: algo entre voce e o
+HuggingFace esta quebrando os registros da conexao. Reexecutar nao
+resolve, porque arquivo pequeno passa e transferencia sustentada quebra.
+
+Em ordem de eficacia:
+
+  1. Baixe com o downloader em Rust, que usa outra pilha TLS:
+       uv pip install hf_transfer
+       set HF_HUB_ENABLE_HF_TRANSFER=1
+
+  2. Desligue a inspecao de HTTPS do antivirus, ou a VPN, so durante o
+     download. E a causa mais comum deste erro.
+
+  3. Baixe fora do pipeline, repetindo ate completar (cada tentativa
+     retoma de onde parou):
+       hf download <modelo>
+
+  4. Ultimo recurso: baixe o repositorio do modelo pelo navegador e
+     aponte `bank.embedding_model` para a pasta local.
+"""
+
+    return """\
+E download do HuggingFace, entao costuma ser transitorio: rodar de novo
+retoma de onde parou. Se insistir:
+
+  set HF_HUB_DISABLE_XET=1        (troca para o download classico)
+  uv pip install hf_transfer && set HF_HUB_ENABLE_HF_TRANSFER=1
+
+`bank.embedding_model` tambem aceita o caminho de uma pasta local, se
+voce preferir baixar o modelo por fora.
+"""
+
+
 def cosine(a: array | list[float], b: array | list[float]) -> float:
     """Cosseno. Nao assume que os vetores chegam normalizados."""
     if len(a) != len(b):
@@ -150,11 +205,8 @@ class AssetBank:
         except Exception as exc:
             raise RuntimeError(
                 f"nao foi possivel carregar o modelo de embedding "
-                f"({type(exc).__name__}: {exc}).\n"
-                "Nada foi gasto. E download do HuggingFace, entao costuma ser "
-                "transitorio — rodar de novo retoma de onde parou. Se insistir, "
-                "`set HF_HUB_DISABLE_XET=1` no Windows troca para o download "
-                "classico, que falha menos."
+                f"'{self.model_name}' ({type(exc).__name__}: {exc}).\n"
+                f"\nNada foi gasto.\n" + _embedder_remedies(exc)
             ) from exc
 
     # -- leitura -----------------------------------------------------------
