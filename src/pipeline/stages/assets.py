@@ -29,7 +29,8 @@ def build_resolver(config: Config, bank: AssetBank, *, dry_run: bool) -> AssetRe
     provider = stock = None
 
     try:
-        provider = build_provider(config.image_provider.active, config.image_provider)
+        provider = build_provider(
+            config.image_provider.active, config.image_provider, config.network)
         if provider is None:
             log("assets.no_provider",
                 detail="geracao desligada no config; so banco e stock, "
@@ -40,7 +41,7 @@ def build_resolver(config: Config, bank: AssetBank, *, dry_run: bool) -> AssetRe
         log("assets.warn", detail=f"provider indisponivel ({exc}); dry-run segue")
 
     try:
-        stock = PexelsStock(config.stock)
+        stock = PexelsStock(config.stock, config.network)
     except RuntimeError as exc:
         if not dry_run:
             log("assets.warn", detail=f"stock indisponivel ({exc}); tudo vai para geracao")

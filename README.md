@@ -150,6 +150,21 @@ graça pelo banco.
 uv run pipeline bank prune --unused-days 90
 ```
 
+## Conexão instável
+
+`network.download_attempts` (default 6) existe porque numa conexão que
+corrompe TLS em transferência sustentada, as 3 tentativas do spec dão ~50% de
+chance de perder um run de 20 imagens. Seis derrubam para ~3%.
+
+A assimetria com `api_attempts` (3) é deliberada: baixar por URL é idempotente
+e de graça, mas criar uma predicação no provider **cobra** — se ela roda no
+servidor e a resposta se perde, repetir gera uma segunda imagem e cobra duas
+vezes.
+
+Downloads escrevem num `.part` e só movem para o destino ao completar, então
+uma queda no meio não deixa arquivo truncado que o resto do pipeline trataria
+como imagem válida.
+
 ## Rodando sem conta de geração
 
 Se você não tem crédito no Replicate, `image_provider.active: none` no config

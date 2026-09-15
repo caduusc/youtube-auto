@@ -45,6 +45,20 @@ class BankConfig(BaseModel):
     similarity_threshold: float
 
 
+class NetworkConfig(BaseModel):
+    """Retries por tipo de chamada.
+
+    A distincao nao e cosmetica. Criar uma predicao no provider NAO e
+    idempotente: se ela roda no servidor e a resposta se perde, repetir gera
+    uma segunda imagem e cobra duas vezes. Ja baixar um arquivo por URL e
+    idempotente e de graca, entao pode insistir muito mais.
+    """
+
+    api_attempts: int = 3
+    download_attempts: int = 6
+    base_delay_seconds: float = 1.0
+
+
 class BudgetConfig(BaseModel):
     max_usd_per_video: float
     brl_per_usd: float
@@ -117,6 +131,7 @@ class Config(BaseModel):
     budget: BudgetConfig
     image_provider: ImageProviderConfig
     stock: StockConfig
+    network: NetworkConfig = Field(default_factory=NetworkConfig)
     render: RenderConfig = Field(default_factory=RenderConfig)
     subtitles: SubtitlesConfig = Field(default_factory=SubtitlesConfig)
 

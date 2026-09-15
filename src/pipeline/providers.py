@@ -12,7 +12,7 @@ from typing import Protocol
 
 import requests
 
-from .config import ReplicateConfig, StockConfig, require_key
+from .config import NetworkConfig, ReplicateConfig, StockConfig, require_key
 from .log import log
 from .util import with_retries
 
@@ -25,17 +25,36 @@ class ImageProvider(Protocol):
         """Gera uma imagem em `destination`. Devolve o custo em USD."""
 
 
-def _download(url: str, destination: Path, *, timeout: float, headers: dict | None = None) -> None:
+def _download(
+    url: str, destination: Path, *, timeout: float, network: NetworkConfig,
+    headers: dict | None = None,
+) -> None:
+    """Baixa para um temporario e so move ao completar.
+
+    Escrever direto no destino deixaria um arquivo truncado no lugar se a
+    conexao caisse no meio — e o resto do pipeline trataria aquilo como uma
+    imagem valida.
+    """
     destination.parent.mkdir(parents=True, exist_ok=True)
+    partial = destination.with_suffix(destination.suffix + ".part")
 
     def attempt() -> None:
         response = requests.get(url, timeout=timeout, headers=headers or {}, stream=True)
         response.raise_for_status()
-        with destination.open("wb") as handle:
+        with partial.open("wb") as handle:
             for chunk in response.iter_content(chunk_size=65536):
                 handle.write(chunk)
+        partial.replace(destination)
 
-    with_retries(attempt, label=f"download {destination.name}")
+    try:
+        with_retries(
+            attempt,
+            attempts=network.download_attempts,
+            base_delay=network.base_delay_seconds,
+            label=f"download {destination.name}",
+        )
+    finally:
+        partial.unlink(missing_ok=True)
 
 
 # --------------------------------------------------------------------------
@@ -48,8 +67,9 @@ class ReplicateProvider:
 
     BASE = "https://api.replicate.com/v1"
 
-    def __init__(self, config: ReplicateConfig) -> None:
+    def __init__(self, config: ReplicateConfig, network: NetworkConfig) -> None:
         self.config = config
+        self.network = network
         self.token = require_key(config.env, "provider de imagem (replicate)")
 
     @property
@@ -62,8 +82,13 @@ class ReplicateProvider:
 
     def generate(self, prompt: str, destination: Path) -> float:
         try:
+            # `api_attempts` e nao `download_attempts`: criar predicao cobra,
+            # e uma resposta perdida repetida gera imagem duplicada.
             prediction = with_retries(
-                lambda: self._create(prompt), label=f"replicate {self.config.model}"
+                lambda: self._create(prompt),
+                attempts=self.network.api_attempts,
+                base_delay=self.network.base_delay_seconds,
+                label=f"replicate {self.config.model}",
             )
         except RuntimeError as exc:
             cause = exc.__cause__
@@ -73,7 +98,8 @@ class ReplicateProvider:
                     raise RuntimeError(explained) from cause
             raise
         url = self._await_output(prediction)
-        _download(url, destination, timeout=self.config.timeout_seconds)
+        _download(url, destination, timeout=self.config.timeout_seconds,
+                  network=self.network)
         log("provider.generated", model=self.config.model, file=destination.name,
             cost=f"${self.cost_usd_per_image:.4f}")
         return self.cost_usd_per_image
@@ -138,7 +164,7 @@ class ReplicateProvider:
         return output
 
 
-def build_provider(active: str, config) -> ImageProvider | None:
+def build_provider(active: str, config, network: NetworkConfig) -> ImageProvider | None:
     """Constroi o provider, ou None quando geracao esta desligada.
 
     `active: none` nao e um erro: e a escolha de rodar so com banco e stock,
@@ -148,7 +174,7 @@ def build_provider(active: str, config) -> ImageProvider | None:
     if active in {"none", "off", "disabled"}:
         return None
     if active == "replicate":
-        return ReplicateProvider(config.replicate)
+        return ReplicateProvider(config.replicate, network)
     raise RuntimeError(
         f"image_provider.active='{active}' nao tem implementacao; "
         "use 'replicate' ou 'none'"
@@ -163,8 +189,9 @@ def build_provider(active: str, config) -> ImageProvider | None:
 class PexelsStock:
     BASE = "https://api.pexels.com/v1/search"
 
-    def __init__(self, config: StockConfig) -> None:
+    def __init__(self, config: StockConfig, network: NetworkConfig) -> None:
         self.config = config
+        self.network = network
         self.key = require_key(config.env, "stock (pexels)")
 
     def is_generic(self, tags: list[str]) -> bool:
@@ -190,7 +217,10 @@ class PexelsStock:
             response.raise_for_status()
             return response.json()
 
-        payload = with_retries(attempt, label=f"pexels '{query}'")
+        payload = with_retries(
+            attempt, attempts=self.network.api_attempts,
+            base_delay=self.network.base_delay_seconds, label=f"pexels '{query}'",
+        )
         for photo in payload.get("photos", []):
             if photo.get("width", 0) >= self.config.min_width:
                 url = photo.get("src", {}).get("original")
@@ -200,4 +230,5 @@ class PexelsStock:
         return None
 
     def download(self, url: str, destination: Path) -> None:
-        _download(url, destination, timeout=self.config.timeout_seconds)
+        _download(url, destination, timeout=self.config.timeout_seconds,
+                  network=self.network)

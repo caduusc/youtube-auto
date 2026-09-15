@@ -51,17 +51,17 @@ def two_brolls(transcript):
 
 @pytest.mark.parametrize("value", ["none", "off", "disabled"])
 def test_build_provider_aceita_desligar(value, config):
-    assert build_provider(value, config.image_provider) is None
+    assert build_provider(value, config.image_provider, config.network) is None
 
 
 def test_active_invalido_ainda_e_erro(config):
     with pytest.raises(RuntimeError, match="nao tem implementacao"):
-        build_provider("dall-e", config.image_provider)
+        build_provider("dall-e", config.image_provider, config.network)
 
 
 def test_mensagem_de_active_invalido_cita_none(config):
     with pytest.raises(RuntimeError, match="'replicate' ou 'none'"):
-        build_provider("dall-e", config.image_provider)
+        build_provider("dall-e", config.image_provider, config.network)
 
 
 def test_estagio_constroi_resolver_sem_provider(config, bank, tmp_path, monkeypatch):

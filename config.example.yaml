@@ -105,6 +105,21 @@ bank:
   # conta de geracao explode.
   similarity_threshold: 0.82
 
+# Retries por tipo de chamada. A assimetria nao e cosmetica:
+#
+# Criar uma predicao no provider NAO e idempotente. Se ela roda no servidor e
+# a resposta se perde no caminho, repetir gera uma segunda imagem e cobra duas
+# vezes — por isso `api_attempts` fica nos 3 do spec.
+#
+# Baixar um arquivo por URL e idempotente e de graca, entao pode insistir
+# muito mais. Numa conexao que corrompe TLS em transferencia sustentada, 3
+# tentativas dao ~50% de chance de perder um run de 20 imagens; 6 derrubam
+# isso para ~3%. Suba se a sua conexao for pior.
+network:
+  api_attempts: 3
+  download_attempts: 6
+  base_delay_seconds: 1.0
+
 budget:
   # Teto por video. R$ 200/mes / 8 videos = R$ 25/video ~= USD 4.60.
   # O default e bem abaixo disso de proposito: se estourar, o estagio 4 para
