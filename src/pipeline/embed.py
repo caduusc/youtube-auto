@@ -41,11 +41,18 @@ class SentenceTransformerEmbedder:
 
     def embed(self, text: str) -> list[float]:
         if self._model is None:
+            # O log vem ANTES do import, nao depois. O que demora e o
+            # `import sentence_transformers`, que carrega o torch: medido em
+            # ~58s numa maquina real. Logando depois, o terminal fica um
+            # minuto parado sem dizer no que, e parece que travou.
+            log("embed.loading", model=self.model_name,
+                **({"from": self.load_path} if self.load_path != self.model_name else {}),
+                detail="carregando torch, pode levar um minuto na primeira vez")
+
             from sentence_transformers import SentenceTransformer
 
-            log("embed.load", model=self.model_name,
-                **({"from": self.load_path} if self.load_path != self.model_name else {}))
             self._model = SentenceTransformer(self.load_path)
+            log("embed.loaded", model=self.model_name)
         vector = self._model.encode(text, normalize_embeddings=True)
         return [float(x) for x in vector]
 
