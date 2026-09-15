@@ -139,7 +139,19 @@ def run(
     output = work / "final.mp4"
     source = Path(manifest.source_path)
 
-    with stage("render", duration=f"{edl.duration:.1f}s"):
+    # `render.fps: 0` no config significa herdar o fps da entrada. Resolver
+    # aqui, numa copia, faz todo o resto do estagio e do filtergraph ver um
+    # numero concreto em vez de espalhar o `or manifest.fps`.
+    config = config.model_copy(deep=True)
+    if not config.render.fps:
+        config.render.fps = manifest.fps
+        log("render.fps", inherited=f"{manifest.fps:.3f}")
+    elif abs(config.render.fps - manifest.fps) > 0.01:
+        log("render.warn",
+            detail=f"entrada a {manifest.fps:.2f}fps sai a {config.render.fps:g}fps; "
+                   f"use render.fps: 0 para preservar")
+
+    with stage("render", duration=f"{edl.duration:.1f}s", fps=f"{config.render.fps:g}"):
         prepared = prepare_images(assets, config, work)
         overlays = build_overlays(edl, prepared, config)
         duration = frame_align(edl.duration, config.render.fps)

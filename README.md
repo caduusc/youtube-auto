@@ -197,6 +197,27 @@ de **índice de segmento do transcript**, e o pipeline deriva os tempos. A
 fronteira passa a ser, por construção, fronteira de segmento: cortar no meio
 de uma frase deixa de ser representável.
 
+### As regras editoriais interagem de um jeito que não é óbvio
+
+Com faixas de b-roll de `L` segundos e proporção `r`, a taxa de trocas é
+`120 * r / L` — **não depende da duração do vídeo**. Com os defaults
+(`L ≤ 25s`, 3 trocas/min), a proporção para de subir em `25*3/120 = 62,5%`:
+o teto de `broll_ratio_max: 0.70` nunca é atingido.
+
+Isso importa na prática: um modelo que mire no meio da faixa nominal 50-70%
+viola o ritmo em toda tentativa. Por isso o estágio 3 calcula a janela real
+para o vídeo em questão e a manda no prompt, em segundos absolutos, com
+precedência sobre as faixas relativas.
+
+Vídeo curto aperta muito mais. Em 2 minutos só existe **uma** configuração
+válida: 3 faixas de b-roll de ~23s cada. Abaixo de ~70 segundos não existe
+nenhuma — a intro obrigatória de 20s não cabe junto com 50% de b-roll. O
+estágio 3 detecta isso antes de chamar a API e diz qual knob soltar, em vez
+de gastar três tentativas de Opus descobrindo.
+
+Para testar com vídeo curto, baixe `intro_aroll_seconds` para uns 8s e
+`broll_ratio_min` para uns 0.35.
+
 ### "3 trocas por minuto" foi separado em dois números
 
 Como janela deslizante estrita, a regra é inviável junto com as outras duas:
@@ -229,7 +250,7 @@ uv run pytest
 ```
 
 Cobrem a validação da EDL, a lógica de reuso do banco, o loop de rejeição do
-estágio 3 e a geração do filtergraph. Toda chamada externa é mockada:
+estágio 3, a análise de viabilidade e a geração do filtergraph. Toda chamada externa é mockada:
 **nenhum teste gasta dinheiro** e nenhum precisa de chave de API, de ffmpeg
 ou dos modelos locais.
 
