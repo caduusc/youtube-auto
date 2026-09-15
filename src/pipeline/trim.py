@@ -285,6 +285,24 @@ def keep_ranges(
     return [r for r in aligned if r.duration >= rules.min_keep_seconds]
 
 
+def representable(cuts: list[Cut], fps: float) -> list[Cut]:
+    """Descarta corte menor que um frame. Nao e arredondamento, e indefinicao.
+
+    `keep_ranges` encaixa as fronteiras no grid de frames, entao o que um
+    corte remove de fato e `snap(end) - snap(start)`. Medido a 30fps, um corte
+    de 10ms remove 0ms ou 33ms dependendo de onde cai no grid: quando remove
+    zero e uma emenda de graca no filtergraph — custo de artefato sem ganho —
+    e quando remove, remove o triplo do pretendido.
+
+    Um frame e o limite de representabilidade, nao um numero escolhido: abaixo
+    dele o corte nao existe como corte, existe como sorteio.
+    """
+    if fps <= 0:
+        return cuts
+    frame = 1.0 / fps
+    return [cut for cut in cuts if cut.duration >= frame]
+
+
 def remap_transcript(transcript: Transcript, plan: TrimPlan) -> Transcript:
     """Transcript na timeline cortada.
 
@@ -352,7 +370,7 @@ def build_plan(transcript: Transcript, rules: TrimConfig, fps: float) -> TrimPla
             ),
         )
 
-    cuts = find_cuts(transcript, rules)
+    cuts = representable(find_cuts(transcript, rules), fps)
     keep = keep_ranges(cuts, transcript.duration, rules, fps)
     trimmed = sum(r.duration for r in keep)
     removed = transcript.duration - trimmed

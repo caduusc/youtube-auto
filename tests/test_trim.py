@@ -453,3 +453,43 @@ def test_estatisticas_fecham_com_aperto():
     s = plan.stats
     assert s.n_cuts == s.n_pause_cuts + s.n_filler_cuts + s.n_squeeze_cuts
     assert s.trimmed_seconds == pytest.approx(sum(r.duration for r in plan.keep), abs=1e-3)
+
+
+def test_corte_menor_que_um_frame_e_descartado():
+    """Abaixo de um frame o corte nao e impreciso, e indeterminado.
+
+    Medido a 30fps: um corte de 10ms remove 0ms ou 33ms dependendo de onde
+    cai no grid. Zero e uma emenda de graca no filtergraph — risco de
+    artefato sem ganho nenhum; 33ms e o triplo do pretendido.
+    """
+    from pipeline.trim import representable
+
+    rules = TrimConfig(pause_max_seconds=0.20)
+    # gap de 0.21s com teto de 0.20 -> corte de 0.01s, abaixo de 1/30
+    t = fala(("uma", 0.00, 0.30), ("frase", 0.51, 1.00))
+    assert find_cuts(t, rules)                      # find_cuts ainda o propoe
+    assert representable(find_cuts(t, rules), 30.0) == []
+
+    plan = build_plan(t, rules, 30.0)
+    assert plan.cuts == []                          # e o plano nao o carrega
+    assert len(plan.keep) == 1                      # sem emenda nenhuma
+
+
+def test_corte_de_um_frame_e_mantido():
+    from pipeline.trim import representable
+
+    rules = TrimConfig(pause_max_seconds=0.20)
+    t = fala(("uma", 0.00, 0.30), ("frase", 0.54, 1.00))   # corte de 0.04s
+    cuts = representable(find_cuts(t, rules), 30.0)
+    assert [c.reason for c in cuts] == ["squeeze"]
+
+
+def test_fps_maior_representa_corte_menor():
+    """A 60fps um corte de 0.02s e representavel; a 30 nao e."""
+    from pipeline.trim import representable
+
+    rules = TrimConfig(pause_max_seconds=0.20)
+    t = fala(("uma", 0.00, 0.30), ("frase", 0.52, 1.00))   # corte de 0.02s
+    proposto = find_cuts(t, rules)
+    assert representable(proposto, 30.0) == []
+    assert len(representable(proposto, 60.0)) == 1
