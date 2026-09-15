@@ -7,6 +7,8 @@ Os casos aqui vieram de uma execucao real que falhou: um video de 133.9s com
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from pipeline.edl import budget_for, validate
@@ -232,3 +234,44 @@ def test_exemplo_nao_pede_broll_curto_demais_para_o_fade(example_config):
         f"broll_min_seconds={minimo}s abaixo de 2x crossfade "
         f"({2 * render.crossfade_seconds}s): toda faixa dependeria do clamp"
     )
+
+
+def test_exemplo_declara_todas_as_secoes():
+    """O exemplo e documentacao, e secao com default desaparece em silencio.
+
+    `trim`, `network`, `render` e `subtitles` tem default no Pydantic, entao
+    apagar qualquer uma delas do YAML nao quebra a carga nem nenhum outro
+    teste: o config valida, o pipeline roda, e o usuario que copiou o arquivo
+    simplesmente nao sabe que aquele comportamento existe. Foi o que aconteceu
+    — uma edicao no bloco de `editorial` levou a secao `trim` inteira com ela.
+
+    Ler as chaves do YAML cru, e nao o objeto validado, e o que torna o teste
+    capaz de ver a diferenca entre "declarado" e "veio do default".
+    """
+    import yaml
+
+    caminho = Path(__file__).resolve().parents[1] / "config.example.yaml"
+    cru = yaml.safe_load(caminho.read_text(encoding="utf-8"))
+
+    esperadas = {
+        "anthropic", "editorial", "trim", "transcribe", "bank", "network",
+        "budget", "image_provider", "stock", "render", "subtitles",
+    }
+    faltando = esperadas - set(cru)
+    assert not faltando, f"secoes ausentes do config.example.yaml: {sorted(faltando)}"
+
+    # e o estilo, numa das duas formas
+    assert cru.get("style") or cru.get("style_suffix")
+
+
+def test_exemplo_declara_os_campos_que_o_readme_manda_calibrar():
+    """Campo que o README manda mexer nao pode existir so como default."""
+    import yaml
+
+    caminho = Path(__file__).resolve().parents[1] / "config.example.yaml"
+    cru = yaml.safe_load(caminho.read_text(encoding="utf-8"))
+
+    assert "pause_max_seconds" in cru["trim"]      # o lever de dinamismo
+    assert "pause_min_seconds" in cru["trim"]
+    assert "max_fade_ratio" in cru["render"]       # o piso de b-roll curto
+    assert "enabled" in cru["subtitles"]
