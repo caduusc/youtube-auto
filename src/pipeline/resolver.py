@@ -223,6 +223,34 @@ class AssetResolver:
         name = f"{text_hash(prompt, now_iso())[:16]}.{self.image_extension}"
         return self.images_dir / name
 
+    def _index(
+        self, decision: Decision, destination: Path, *, origin: str,
+        prompt: str | None, cost_usd: float,
+    ) -> tuple[int | None, str | None]:
+        """Registra o asset no banco. Devolve (id, aviso).
+
+        A imagem ja esta em disco e, se foi gerada, ja foi paga. Se indexar
+        falhar, o asset NAO pode ser descartado: o video desta rodada ainda
+        usa o arquivo, e a linha fica no banco com embedding vazio para o
+        custo continuar contabilizado. Embedding vazio nunca casa em
+        `find_similar` (o cosseno devolve 0 para tamanhos diferentes), entao
+        a linha nao polui o reuso.
+        """
+        try:
+            embedding = self.bank.embedder.embed(decision.segment.concept)
+            warning = None
+        except Exception as exc:
+            embedding = []
+            warning = f"asset salvo sem embedding ({type(exc).__name__}); nao sera reusado"
+            log("assets.index_degraded", segment=decision.segment_index, error=repr(exc))
+
+        asset = self.bank.add(
+            path=self.bank.relative(destination), concept=decision.segment.concept,
+            origin=origin, prompt=prompt, cost_usd=cost_usd, embedding=embedding,
+        )
+        self.bank.mark_used(asset.id)
+        return asset.id, warning
+
     def _solid(self, decision: Decision, reason: str) -> AssetItem:
         log("assets.solid", segment=decision.segment_index, reason=reason)
         return AssetItem(segment_index=decision.segment_index, origin="solid",
@@ -231,6 +259,8 @@ class AssetResolver:
     def _try_stock(self, decision: Decision) -> AssetItem | None:
         if self.stock is None:
             return None
+        log("assets.stock_search", segment=decision.segment_index,
+            tags=" ".join(decision.segment.concept_tags))
         try:
             found = self.stock.search(decision.segment.concept_tags)
         except Exception as exc:
@@ -240,25 +270,21 @@ class AssetResolver:
             return None
         url, credit = found
         destination = self._destination(" ".join(decision.segment.concept_tags))
+        log("assets.stock_download", segment=decision.segment_index, file=destination.name)
         self.stock.download(url, destination)
-        asset = self.bank.add(
-            path=self.bank.relative(destination), concept=decision.segment.concept,
-            origin="stock", prompt=credit, cost_usd=0.0,
-        )
-        self.bank.mark_used(asset.id)
+        asset_id, warning = self._index(
+            decision, destination, origin="stock", prompt=credit, cost_usd=0.0)
         log("assets.stock", segment=decision.segment_index, file=destination.name)
         return AssetItem(segment_index=decision.segment_index, origin="stock",
-                         path=asset.path, asset_id=asset.id, prompt=credit, cost_usd=0.0)
+                         path=self.bank.relative(destination), asset_id=asset_id,
+                         prompt=credit, cost_usd=0.0, note=warning)
 
     def _generate(self, decision: Decision) -> AssetItem:
         prompt = self.prompt_for(decision.segment)
         destination = self._destination(prompt)
         cost = self.provider.generate(prompt, destination)
-        asset = self.bank.add(
-            path=self.bank.relative(destination), concept=decision.segment.concept,
-            origin="generated", prompt=prompt, cost_usd=cost,
-        )
-        self.bank.mark_used(asset.id)
+        asset_id, warning = self._index(
+            decision, destination, origin="generated", prompt=prompt, cost_usd=cost)
         return AssetItem(segment_index=decision.segment_index, origin="generated",
-                         path=asset.path, asset_id=asset.id, prompt=prompt,
-                         cost_usd=round(cost, 4))
+                         path=self.bank.relative(destination), asset_id=asset_id,
+                         prompt=prompt, cost_usd=round(cost, 4), note=warning)

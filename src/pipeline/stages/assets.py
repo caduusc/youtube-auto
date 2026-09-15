@@ -86,6 +86,10 @@ def run(manifest: Manifest, edl: EDL, config: Config, *, dry_run: bool = False) 
     with stage("assets", n_broll=edl.stats.n_broll, dry_run=dry_run):
         bank = open_bank(config)
         try:
+            if not dry_run:
+                # Antes de baixar ou gerar qualquer coisa: se o modelo de
+                # embedding nao carrega, melhor saber agora que depois de pagar.
+                bank.warmup()
             resolver = build_resolver(config, bank, dry_run=dry_run)
             try:
                 assets = resolver.resolve(edl.segments, dry_run=dry_run)

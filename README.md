@@ -27,9 +27,17 @@ cp config.example.yaml config.yaml
 Você também precisa de **ffmpeg e ffprobe** no PATH (`apt install ffmpeg`,
 `brew install ffmpeg`).
 
-O primeiro `run` baixa dois modelos locais, uns 400MB no total: o
+O primeiro `run` baixa dois modelos locais, uns 600MB no total: o
 `faster-whisper` da transcrição e o de embedding do banco de assets. Fica
 tudo em cache no seu `~`, então é uma vez só.
+
+Se o download do modelo de embedding falhar no meio (`CAS Client Error`,
+`error decoding response body`), é transferência do HuggingFace, não o
+pipeline: rodar de novo retoma de onde parou. No Windows, o transporte novo
+do HF falha com alguma frequência — `set HF_HUB_DISABLE_XET=1` troca para o
+download clássico e resolve. O estágio 4 carrega esse modelo **antes** de
+baixar ou gerar qualquer imagem, justamente para que essa falha não aconteça
+depois de você já ter pago.
 
 ### Variáveis de ambiente
 
