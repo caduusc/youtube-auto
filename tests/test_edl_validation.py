@@ -76,7 +76,7 @@ def test_rejeita_ritmo_acelerado(transcript, rules):
 def test_rejeita_pouco_broll(transcript, rules):
     planned = PlannedEDL(spans=[span("aroll", 0, 180), span("broll", 181, 184), span("aroll", 185, 199)])
     errors = check(planned, transcript, rules)
-    assert any("abaixo do minimo de 50%" in e for e in errors), errors
+    assert any("abaixo do minimo" in e and "faltam" in e for e in errors), errors
 
 
 def test_rejeita_broll_demais(transcript, rules):
@@ -85,7 +85,7 @@ def test_rejeita_broll_demais(transcript, rules):
                                 span("aroll", 25, 25), span("broll", 26, 30), span("aroll", 31, 31),
                                 span("broll", 32, 36), span("aroll", 37, 37), span("broll", 38, 199)])
     errors = check(planned, transcript, rules)
-    assert any("acima do maximo de 70%" in e for e in errors), errors
+    assert any("acima do maximo" in e and "devolva" in e for e in errors), errors
 
 
 def test_rejeita_buraco_na_timeline(transcript, rules):

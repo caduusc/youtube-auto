@@ -18,7 +18,7 @@ from __future__ import annotations
 import anthropic
 
 from .config import AnthropicConfig, EditorialConfig, require_key
-from .edl import build, resolve, validate
+from .edl import Budget, budget_for, build, resolve, validate
 from .log import log
 from .schemas import EDL, PlannedEDL, Transcript
 from .util import with_retries
@@ -96,11 +96,21 @@ def system_prompt(rules: EditorialConfig) -> str:
     )
 
 
-def first_request(transcript: Transcript) -> str:
+def first_request(transcript: Transcript, budget: Budget) -> str:
+    """O pedido, com as regras ja resolvidas em numeros absolutos.
+
+    Sem isso o modelo recebe so as regras relativas ("3 trocas por minuto") e
+    tem que descobrir por tentativa quantas faixas cabem. Num video curto o
+    espaco de solucao pode ser um unico ponto, e as 3 tentativas se gastam
+    tateando em vez de escolhendo onde cortar.
+    """
+    segment_avg = transcript.duration / max(1, len(transcript.segments))
     return (
         f"Duracao do video: {transcript.duration:.1f}s "
         f"({transcript.duration / 60:.1f} min), {len(transcript.segments)} segmentos "
-        f"(indices 0 a {len(transcript.segments) - 1}).\n\n"
+        f"(indices 0 a {len(transcript.segments) - 1}, "
+        f"~{segment_avg:.1f}s cada em media).\n\n"
+        f"{budget.as_prompt()}\n\n"
         f"Transcript:\n\n{format_transcript(transcript)}"
     )
 
@@ -121,6 +131,21 @@ def plan(
     rules: EditorialConfig,
     client: anthropic.Anthropic | None = None,
 ) -> EDL:
+    # Recusa de graca o video em que nenhuma EDL valida existe, antes de
+    # gastar 3 tentativas de Opus descobrindo isso.
+    budget = budget_for(transcript.duration, rules)
+    if not budget.feasible:
+        raise PlanningFailed(
+            f"as regras editoriais nao tem solucao para este video: {budget.reason}.\n"
+            f"Nenhuma chamada a API foi feita. Ajuste `editorial` no config — "
+            f"em video curto, o caminho costuma ser baixar `intro_aroll_seconds` "
+            f"e `broll_ratio_min`, ou subir `max_switches_per_minute`."
+        )
+    log("plan.budget", duration=f"{transcript.duration:.0f}s",
+        max_switches=budget.max_switches,
+        broll_spans=f"{budget.n_broll_min}-{budget.n_broll_max}",
+        broll_seconds=f"{budget.broll_seconds_min:.0f}-{budget.broll_seconds_max:.0f}s")
+
     if client is None:
         client = anthropic.Anthropic(api_key=require_key(config.env, "planejamento editorial"))
 
@@ -130,7 +155,7 @@ def plan(
         "role": "user",
         "content": [{
             "type": "text",
-            "text": first_request(transcript),
+            "text": first_request(transcript, budget),
             "cache_control": {"type": "ephemeral"},
         }],
     }]

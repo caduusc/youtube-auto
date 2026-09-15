@@ -38,13 +38,28 @@ anthropic:
 
 # Regras editoriais. Alimentam tanto o system prompt do estagio 3 quanto o
 # validador — as duas pontas leem daqui, entao nao podem divergir.
+# ATENCAO: estas regras interagem de um jeito que nao e obvio.
+#
+# Com faixas de b-roll de L segundos e proporcao r, a taxa de trocas e
+# `120 * r / L` — que NAO depende da duracao do video. Com os valores abaixo
+# (L <= 25s, 3 trocas/min), a proporcao para de subir em `25*3/120 = 62.5%`:
+# o teto de `broll_ratio_max` abaixo de 70% nunca e atingido. Ele so entra em
+# jogo se voce subir `broll_max_seconds` ou `max_switches_per_minute`.
+#
+# Alem disso, video curto aperta muito o espaco: num video de 2 minutos so
+# existe UMA configuracao valida (3 faixas de b-roll de ~23s). Abaixo de
+# ~70s, as regras nao tem solucao nenhuma — o estagio 3 detecta isso e para
+# antes de chamar a API, dizendo qual knob soltar.
+#
+# Para testar com video curto, o caminho e baixar `intro_aroll_seconds` para
+# uns 8s e `broll_ratio_min` para uns 0.35.
 editorial:
   broll_min_seconds: 8.0
   broll_max_seconds: 25.0
   max_switches_per_minute: 3
   intro_aroll_seconds: 20.0     # os primeiros N segundos sao sempre a-roll
   broll_ratio_min: 0.50
-  broll_ratio_max: 0.70
+  broll_ratio_max: 0.70         # inalcancavel com os valores acima; ver nota
   concept_tags_min: 2
   concept_tags_max: 4
 
@@ -130,7 +145,11 @@ stock:
 render:
   width: 1920
   height: 1080
-  fps: 30                # 0 = herdar o fps do arquivo de entrada
+  # 0 = herdar o fps do arquivo de entrada. O default de 30 reencoda uma
+  # entrada de 60fps para 30 (o audio nao dessincroniza, a duracao nao muda),
+  # o que para cabeca falante e o certo: metade do arquivo, metade do tempo de
+  # render. Use 0 se voce grava em 60 e quer manter.
+  fps: 30
   crf: 20
   preset: medium
   crossfade_seconds: 0.4
