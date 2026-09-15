@@ -1,0 +1,173 @@
+# ---------------------------------------------------------------------------
+# youtube-auto — configuracao
+#
+#   cp config.example.yaml config.yaml
+#
+# Nenhum valor abaixo esta hardcoded no codigo. Chaves de API NAO ficam aqui:
+# o campo `env` diz de qual variavel de ambiente cada chave e lida.
+# ---------------------------------------------------------------------------
+
+# ===========================================================================
+# ESTE E O CAMPO MAIS IMPORTANTE DO ARQUIVO.
+#
+# `style_suffix` e concatenado ao `concept` de cada segmento antes de ir para o
+# provider de imagem. E o unico mecanismo que faz 20 imagens geradas em 20
+# chamadas independentes parecerem sair da mao do mesmo ilustrador. Se voce
+# mexer em um campo so, mexa neste — e depois de calibrar, NAO mexa mais, ou
+# os videos antigos e novos vao parecer de canais diferentes.
+#
+# Uma boa regra: descreva medium, paleta, luz e tratamento de borda. Nao
+# descreva conteudo (isso e papel do `concept`) e nunca peca texto na imagem.
+# ===========================================================================
+style_suffix: >-
+  editorial illustration, flat vector shapes with subtle paper grain,
+  muted palette of warm sand, deep teal and burnt orange on off-white,
+  soft directional light from the upper left, generous negative space,
+  thick confident outlines, no text, no lettering, no watermark,
+  no logos, no human faces in focus
+
+anthropic:
+  # O planejamento editorial (estagio 3) e o que mais determina se o video
+  # fica bom: onde cortar e o que a cena mostra.
+  model: claude-opus-5
+  env: ANTHROPIC_API_KEY
+  effort: high          # low | medium | high | xhigh | max
+  max_tokens: 16000
+  timeout_seconds: 900  # Opus com thinking adaptativo pensa um bom tempo
+  max_attempts: 3       # tentativas de EDL valida antes de desistir
+
+# Regras editoriais. Alimentam tanto o system prompt do estagio 3 quanto o
+# validador — as duas pontas leem daqui, entao nao podem divergir.
+editorial:
+  broll_min_seconds: 8.0
+  broll_max_seconds: 25.0
+  max_switches_per_minute: 3
+  intro_aroll_seconds: 20.0     # os primeiros N segundos sao sempre a-roll
+  broll_ratio_min: 0.50
+  broll_ratio_max: 0.70
+  concept_tags_min: 2
+  concept_tags_max: 4
+
+transcribe:
+  model: small          # tiny | base | small | medium | large-v3
+  device: cpu
+  compute_type: int8    # int8 e ~4x mais rapido que float32 em CPU
+  language: pt
+  beam_size: 5
+  vad_filter: true
+
+bank:
+  db_path: assets/bank.db
+  images_dir: assets/images
+  # Modelo de embedding local. 384 dimensoes, ~120MB, multilingue.
+  embedding_model: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+  # Similaridade de cosseno minima para reusar uma imagem do banco.
+  # 0.82 e conservador. Abaixo de ~0.75 comeca a reusar imagem que nao
+  # ilustra o trecho; acima de ~0.90 o reuso praticamente nao acontece e a
+  # conta de geracao explode.
+  similarity_threshold: 0.82
+
+budget:
+  # Teto por video. R$ 200/mes / 8 videos = R$ 25/video ~= USD 4.60.
+  # O default e bem abaixo disso de proposito: se estourar, o estagio 4 para
+  # e mostra o relatorio de estimativa em vez de gastar.
+  max_usd_per_video: 1.50
+  brl_per_usd: 5.40     # taxa fixa, usada apenas no relatorio
+
+# Provider de imagem. `active` escolhe a implementacao; as demais ficam
+# inertes. Trocar de provider e trocar esta linha.
+image_provider:
+  active: replicate
+  replicate:
+    env: REPLICATE_API_TOKEN
+    # flux-schnell: ~USD 0.003/imagem, 4 passos, otimo para ilustracao flat.
+    # flux-dev:     ~USD 0.025/imagem, mais fiel a prompts longos.
+    model: black-forest-labs/flux-schnell
+    cost_usd_per_image: 0.003
+    aspect_ratio: "16:9"
+    output_format: png
+    timeout_seconds: 120
+
+stock:
+  # Stock gratuito para cenas genericas — custo zero, evita queimar geracao
+  # em "mao digitando em teclado" pela vigesima vez.
+  provider: pexels
+  env: PEXELS_API_KEY
+  orientation: landscape
+  min_width: 2400        # precisamos de folga para o Ken Burns em 1080p
+  timeout_seconds: 30
+  # Se QUALQUER tag de `concept_tags` casar com esta lista, o segmento e
+  # roteado para o stock antes de considerar geracao. Compare em minusculas,
+  # match por substring.
+  generic_tags:
+    - office
+    - desk
+    - city
+    - street
+    - skyline
+    - hands typing
+    - keyboard
+    - laptop
+    - computer
+    - coffee
+    - nature
+    - forest
+    - ocean
+    - mountain
+    - sky
+    - clouds
+    - meeting
+    - handshake
+    - crowd
+    - traffic
+    - sunset
+    - window
+    - books
+    - notebook
+    - money
+    - chart
+
+render:
+  width: 1920
+  height: 1080
+  fps: 30                # 0 = herdar o fps do arquivo de entrada
+  crf: 20
+  preset: medium
+  crossfade_seconds: 0.4
+  # Cor do fallback de cor solida (segmento que ficou sem imagem).
+  solid_fallback_color: "0x1B2A33"
+  # Acima deste tamanho o filtergraph e quebrado em chunks por janela de
+  # tempo e concatenado no final com o demuxer concat.
+  max_filtergraph_chars: 3000
+
+  ken_burns:
+    # scale_crop: escala a imagem para 2x a resolucao de saida, anima o
+    #   tamanho da janela com `scale:eval=frame` e a translacao com as
+    #   expressoes x/y do `crop`, e so entao reduz para 1080p. O passo de
+    #   1px acontece na tela 2x, entao vira meio pixel na saida — e por isso
+    #   que nao treme. Este e o caminho default.
+    # zoompan: o filtro nativo. Deixado como escape hatch caso a sua build de
+    #   ffmpeg recuse a reconfiguracao de tamanho por frame do scale_crop.
+    #   Treme mais em movimento lento.
+    engine: scale_crop
+    zoom_min: 1.00
+    zoom_max: 1.12
+    # A direcao alterna nesta ordem entre segmentos consecutivos de b-roll,
+    # para o movimento nao ficar repetitivo.
+    directions: [zoom_in, pan_right, zoom_out, pan_left]
+    # Fator de super-amostragem da tela intermediaria (2 = 2x a saida).
+    canvas_scale: 2
+
+subtitles:
+  enabled: true
+  font_name: Inter
+  font_size: 54
+  primary_color: "&H00FFFFFF"    # ASS usa &HAABBGGRR
+  outline_color: "&H00101010"
+  outline: 3
+  shadow: 1
+  bold: true
+  alignment: 2                   # numpad: 2 = centro embaixo
+  margin_v: 90
+  max_chars_per_line: 42
+  max_lines: 2

@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+work/
+assets/images/
+assets/bank.db
+config.yaml
+*.mp4
+!tests/fixtures/*.mp4
