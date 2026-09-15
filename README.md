@@ -27,17 +27,35 @@ cp config.example.yaml config.yaml
 Você também precisa de **ffmpeg e ffprobe** no PATH (`apt install ffmpeg`,
 `brew install ffmpeg`).
 
-O primeiro `run` baixa dois modelos locais, uns 600MB no total: o
+O primeiro `run` baixa dois modelos locais, uns 250MB no total: o
 `faster-whisper` da transcrição e o de embedding do banco de assets. Fica
 tudo em cache no seu `~`, então é uma vez só.
 
-Se o download do modelo de embedding falhar no meio (`CAS Client Error`,
-`error decoding response body`), é transferência do HuggingFace, não o
-pipeline: rodar de novo retoma de onde parou. No Windows, o transporte novo
-do HF falha com alguma frequência — `set HF_HUB_DISABLE_XET=1` troca para o
-download clássico e resolve. O estágio 4 carrega esse modelo **antes** de
-baixar ou gerar qualquer imagem, justamente para que essa falha não aconteça
-depois de você já ter pago.
+O modelo de embedding é **inglês**, apesar de o vídeo ser em português. O
+banco só embeda o campo `concept`, que o estágio 3 sempre escreve em inglês;
+o transcript nunca passa por ali. Um modelo multilíngue custaria 471MB de
+download para nenhum ganho.
+
+Se o download do modelo de embedding falhar (`CAS Client Error`,
+`error decoding response body`, `DECRYPTION_FAILED_OR_BAD_RECORD_MAC`), é
+transferência do HuggingFace, não o pipeline: rodar de novo retoma de onde
+parou. Dois contornos, em ordem:
+
+- `set HF_HUB_DISABLE_XET=1` troca para o download clássico, mais tolerante;
+- se persistir, baixe fora do pipeline com `hf download <modelo>`, que
+  retenta sozinho, e depois rode normalmente — o cache é o mesmo.
+
+Erro de TLS (`BAD_RECORD_MAC`) costuma ser antivírus ou VPN inspecionando a
+conexão; desligar temporariamente resolve.
+
+O estágio 4 carrega esse modelo **antes** de baixar ou gerar qualquer imagem,
+justamente para que essa falha não aconteça depois de você já ter pago.
+
+**Trocar `bank.embedding_model` invalida o banco.** Os embeddings de modelos
+diferentes não são comparáveis, e como vários têm as mesmas 384 dimensões a
+incompatibilidade não apareceria como erro — apareceria como similaridade sem
+sentido. O banco guarda qual modelo gerou cada linha e só compara dentro do
+mesmo; `bank stats` mostra as famílias quando há mais de uma.
 
 ### Variáveis de ambiente
 

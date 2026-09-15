@@ -186,6 +186,13 @@ def cmd_bank(args, config: Config) -> int:
             for origin, count in sorted(stats["by_origin"].items()):
                 print(f"    {origin:<24} {count:>6}")
             print(f"  nunca usadas               {stats['never_used']:>6}")
+            outros = {m: n for m, n in stats["by_model"].items() if m != stats["active_model"]}
+            if outros:
+                print("  " + "-" * 52)
+                print(f"  modelo ativo: {stats['active_model']}")
+                print("  imagens de OUTRO modelo (nao serao reusadas):")
+                for model, count in sorted(outros.items()):
+                    print(f"    {model:<34} {count:>6}")
             print(f"  usos totais                {stats['total_uses']:>6}")
             print(f"  usos por imagem            {stats['avg_uses_per_asset']:>6.2f}")
             print("  " + "-" * 52)
