@@ -1,0 +1,260 @@
+"""Resolucao de imagem para cada segmento de b-roll.
+
+Precedencia, parando na primeira que atender:
+
+  1. banco local   — custo zero, embedding + cosseno acima do limiar
+  2. stock livre   — custo zero, so para cena generica (tags do config)
+  3. geracao       — custo real, `concept` + `style_suffix`
+
+O orcamento entra em dois pontos:
+
+  * um teto de pior caso antes de comecar — se "tudo gerado" estouraria, nao
+    gasta um centavo e devolve a estimativa;
+  * um acumulador durante a execucao, que soma o custo REAL devolvido pelo
+    provider. Como o pior caso ja e o maximo possivel, o acumulador so
+    dispara quando o preco real vem acima do `cost_usd_per_image` do config
+    — provider que reajustou, cobranca por passo, retry cobrado duas vezes.
+    E exatamente por isso que ele soma o retorno de `generate()` e nao o
+    valor estimado. O que sobra depois do teto vira cor solida.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+
+from .bank import AssetBank
+from .log import log
+from .providers import ImageProvider, PexelsStock
+from .schemas import AssetEstimate, AssetItem, Assets, EDLSegment
+from .util import text_hash
+
+
+class BudgetExceeded(RuntimeError):
+    """Pior caso acima do teto. Carrega a estimativa para o relatorio."""
+
+    def __init__(self, estimate: AssetEstimate) -> None:
+        super().__init__(
+            f"pior caso de USD {estimate.worst_case_usd:.2f} acima do teto de "
+            f"USD {estimate.budget_usd:.2f}"
+        )
+        self.estimate = estimate
+
+
+@dataclass
+class Decision:
+    """O que fazer com um segmento, decidido sem gastar nada."""
+
+    segment_index: int
+    segment: EDLSegment
+    route: str                      # "bank" | "stock" | "generate"
+    asset_id: int | None = None
+    path: str | None = None
+    similarity: float | None = None
+
+
+class AssetResolver:
+    def __init__(
+        self,
+        *,
+        bank: AssetBank,
+        provider: ImageProvider | None,
+        stock: PexelsStock | None,
+        style_suffix: str,
+        budget_usd: float,
+        images_dir: Path,
+        image_extension: str = "png",
+    ) -> None:
+        self.bank = bank
+        self.provider = provider
+        self.stock = stock
+        self.style_suffix = style_suffix
+        self.budget_usd = budget_usd
+        self.images_dir = Path(images_dir)
+        self.image_extension = image_extension
+
+    # -- prompt -----------------------------------------------------------
+
+    def prompt_for(self, segment: EDLSegment) -> str:
+        return f"{segment.concept.strip()}, {self.style_suffix.strip()}"
+
+    # -- fase 1: decidir (nao gasta) --------------------------------------
+
+    def plan(self, segments: list[EDLSegment]) -> list[Decision]:
+        """Classifica cada b-roll. Consultas ao banco acontecem de verdade
+        aqui — sao gratis, e sem elas a estimativa nao vale nada."""
+        decisions: list[Decision] = []
+        used_ids: set[int] = set()
+
+        for index, segment in enumerate(segments):
+            if segment.kind != "broll":
+                continue
+
+            hit = self.bank.find_similar(segment.concept, exclude_ids=used_ids)
+            if hit is not None:
+                asset, score = hit
+                used_ids.add(asset.id)
+                decisions.append(
+                    Decision(index, segment, "bank", asset_id=asset.id,
+                             path=asset.path, similarity=score)
+                )
+                continue
+
+            if self.stock is not None and self.stock.is_generic(segment.concept_tags):
+                decisions.append(Decision(index, segment, "stock"))
+                continue
+
+            decisions.append(Decision(index, segment, "generate"))
+
+        return decisions
+
+    def estimate(self, decisions: list[Decision]) -> AssetEstimate:
+        unit = self.provider.cost_usd_per_image if self.provider else 0.0
+        n_broll = len(decisions)
+        n_generate = sum(1 for d in decisions if d.route == "generate")
+        worst_case = n_broll * unit
+        return AssetEstimate(
+            n_broll=n_broll,
+            n_from_bank=sum(1 for d in decisions if d.route == "bank"),
+            n_from_stock=sum(1 for d in decisions if d.route == "stock"),
+            n_to_generate=n_generate,
+            worst_case_usd=round(worst_case, 4),
+            estimated_usd=round(n_generate * unit, 4),
+            budget_usd=self.budget_usd,
+            within_budget=worst_case <= self.budget_usd,
+        )
+
+    # -- fase 2: executar --------------------------------------------------
+
+    def resolve(self, segments: list[EDLSegment], *, dry_run: bool = False) -> Assets:
+        decisions = self.plan(segments)
+        estimate = self.estimate(decisions)
+
+        log("assets.estimate", n_broll=estimate.n_broll, bank=estimate.n_from_bank,
+            stock=estimate.n_from_stock, generate=estimate.n_to_generate,
+            worst_case=f"${estimate.worst_case_usd:.2f}",
+            estimated=f"${estimate.estimated_usd:.2f}", budget=f"${estimate.budget_usd:.2f}")
+
+        if not estimate.within_budget:
+            raise BudgetExceeded(estimate)
+
+        if dry_run:
+            return self._dry_run_assets(decisions, estimate)
+
+        items: list[AssetItem] = []
+        spent = 0.0
+        unit = self.provider.cost_usd_per_image if self.provider else 0.0
+
+        for decision in decisions:
+            if decision.route == "bank":
+                self.bank.mark_used(decision.asset_id)
+                items.append(AssetItem(
+                    segment_index=decision.segment_index, origin="bank",
+                    path=decision.path, asset_id=decision.asset_id,
+                    similarity=round(decision.similarity, 4), cost_usd=0.0,
+                ))
+                continue
+
+            if decision.route == "stock":
+                item = self._try_stock(decision)
+                if item is not None:
+                    items.append(item)
+                    continue
+                # stock nao tinha nada utilizavel; cai para geracao
+                log("assets.stock_fallthrough", segment=decision.segment_index)
+
+            # geracao — checa o acumulador antes de gastar
+            if self.provider is None:
+                items.append(self._solid(decision, "sem provider de imagem configurado"))
+                continue
+            if spent + unit > self.budget_usd:
+                items.append(self._solid(
+                    decision,
+                    f"teto de USD {self.budget_usd:.2f} atingido (gasto: "
+                    f"USD {spent:.2f})"))
+                continue
+            item = self._generate(decision)
+            items.append(item)
+            spent += item.cost_usd  # custo real, nao o estimado
+
+        items.sort(key=lambda i: i.segment_index)
+        by_origin: dict[str, int] = {}
+        for item in items:
+            by_origin[item.origin] = by_origin.get(item.origin, 0) + 1
+
+        return Assets(
+            input_hash="",  # preenchido pelo estagio
+            dry_run=False,
+            items=items,
+            estimate=estimate,
+            total_cost_usd=round(sum(i.cost_usd for i in items), 4),
+            by_origin=by_origin,
+        )
+
+    # -- helpers -----------------------------------------------------------
+
+    def _dry_run_assets(self, decisions: list[Decision], estimate: AssetEstimate) -> Assets:
+        items = [
+            AssetItem(
+                segment_index=d.segment_index,
+                origin="bank" if d.route == "bank" else ("stock" if d.route == "stock" else "generated"),
+                path=d.path,
+                asset_id=d.asset_id,
+                similarity=round(d.similarity, 4) if d.similarity is not None else None,
+                prompt=self.prompt_for(d.segment) if d.route == "generate" else None,
+                cost_usd=0.0,
+                note="dry-run: nada foi baixado nem gerado",
+            )
+            for d in decisions
+        ]
+        by_origin: dict[str, int] = {}
+        for item in items:
+            by_origin[item.origin] = by_origin.get(item.origin, 0) + 1
+        return Assets(input_hash="", dry_run=True, items=items, estimate=estimate,
+                      total_cost_usd=0.0, by_origin=by_origin)
+
+    def _destination(self, prompt: str) -> Path:
+        from .util import now_iso
+
+        name = f"{text_hash(prompt, now_iso())[:16]}.{self.image_extension}"
+        return self.images_dir / name
+
+    def _solid(self, decision: Decision, reason: str) -> AssetItem:
+        log("assets.solid", segment=decision.segment_index, reason=reason)
+        return AssetItem(segment_index=decision.segment_index, origin="solid",
+                         path=None, cost_usd=0.0, note=reason)
+
+    def _try_stock(self, decision: Decision) -> AssetItem | None:
+        if self.stock is None:
+            return None
+        try:
+            found = self.stock.search(decision.segment.concept_tags)
+        except Exception as exc:
+            log("assets.stock_error", segment=decision.segment_index, error=repr(exc))
+            return None
+        if found is None:
+            return None
+        url, credit = found
+        destination = self._destination(" ".join(decision.segment.concept_tags))
+        self.stock.download(url, destination)
+        asset = self.bank.add(
+            path=self.bank.relative(destination), concept=decision.segment.concept,
+            origin="stock", prompt=credit, cost_usd=0.0,
+        )
+        self.bank.mark_used(asset.id)
+        log("assets.stock", segment=decision.segment_index, file=destination.name)
+        return AssetItem(segment_index=decision.segment_index, origin="stock",
+                         path=asset.path, asset_id=asset.id, prompt=credit, cost_usd=0.0)
+
+    def _generate(self, decision: Decision) -> AssetItem:
+        prompt = self.prompt_for(decision.segment)
+        destination = self._destination(prompt)
+        cost = self.provider.generate(prompt, destination)
+        asset = self.bank.add(
+            path=self.bank.relative(destination), concept=decision.segment.concept,
+            origin="generated", prompt=prompt, cost_usd=cost,
+        )
+        self.bank.mark_used(asset.id)
+        return AssetItem(segment_index=decision.segment_index, origin="generated",
+                         path=asset.path, asset_id=asset.id, prompt=prompt,
+                         cost_usd=round(cost, 4))
