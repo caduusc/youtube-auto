@@ -104,6 +104,30 @@ class AssetBank:
         except ValueError:
             return str(Path(path).resolve())
 
+    def warmup(self) -> None:
+        """Carrega o modelo de embedding ANTES de qualquer gasto.
+
+        O embedder e lazy e so era tocado no primeiro `add`, que acontece
+        depois de baixar ou gerar a imagem. Com o banco vazio o
+        curto-circuito de `find_similar` adiava ainda mais. Resultado: um
+        download de 400MB que falha (rede, disco, rate limit do HF) derrubava
+        o estagio depois de a imagem ja ter sido paga.
+
+        Chamado no inicio do estagio 4 numa execucao real, o erro aparece
+        antes de gastar.
+        """
+        try:
+            self.embedder.embed("warmup")
+        except Exception as exc:
+            raise RuntimeError(
+                f"nao foi possivel carregar o modelo de embedding "
+                f"({type(exc).__name__}: {exc}).\n"
+                "Nada foi gasto. E download do HuggingFace, entao costuma ser "
+                "transitorio — rodar de novo retoma de onde parou. Se insistir, "
+                "`set HF_HUB_DISABLE_XET=1` no Windows troca para o download "
+                "classico, que falha menos."
+            ) from exc
+
     # -- leitura -----------------------------------------------------------
 
     def _row_to_asset(self, row: sqlite3.Row) -> Asset:
