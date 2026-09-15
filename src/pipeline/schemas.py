@@ -76,7 +76,7 @@ class Transcript(BaseModel):
 class Cut(BaseModel):
     start: float                 # tempo na ENTRADA original
     end: float
-    reason: Literal["pause", "filler"]
+    reason: Literal["pause", "filler", "squeeze"]
     token: str = ""              # so para filler: a palavra removida
     context: str = ""            # texto ao redor, para voce revisar o corte
 
@@ -102,6 +102,7 @@ class TrimStats(BaseModel):
     n_cuts: int
     n_pause_cuts: int
     n_filler_cuts: int
+    n_squeeze_cuts: int = 0
 
 
 class TrimPlan(BaseModel):

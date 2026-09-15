@@ -97,6 +97,22 @@ editorial:
 trim:
   enabled: true
   pause_min_seconds: 0.8        # 1.2 e conservador, 0.5 e agressivo
+  #
+  # Dois mecanismos diferentes para pausa, e o de cima nao serve para fala
+  # fluente. Medido numa gravacao real de 134s: 379 palavras, mediana dos
+  # intervalos em 0.22s, maior pausa do video inteiro em 1.04s. Nao ha trecho
+  # morto para remover — nem no limiar de 0.4s o total passa de 4.7%.
+  #
+  #   pause_min_seconds  REMOVE o intervalo (sobra a margem). Poucos cortes,
+  #                      cada um uma batida audivel.
+  #   pause_max_seconds  APERTA: nenhuma pausa passa deste teto, o excesso sai
+  #                      do meio. Muitos cortes pequenos; o ritmo inteiro fica
+  #                      mais apertado em vez de o video ganhar tres saltos.
+  #
+  # O aperto e o unico lever real em fala sem trecho morto, e o preco e o
+  # numero de emendas: 3 pontos de corte viram algumas dezenas, cada um um
+  # risco de artefato. Comece em 0.35 e desca; 0 desliga.
+  pause_max_seconds: 0.0
   filler_min_seconds: 0.40      # piso absoluto de duracao
   filler_silence_seconds: 0.25  # silencio ANTES do som
   filler_stretch_ratio: 2.0     # e tambem 2x a mediana daquele token na sua fala

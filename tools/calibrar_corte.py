@@ -50,7 +50,23 @@ def main(path: Path) -> None:
 
     if gaps:
         print(f"\n  maior pausa: {gaps[0]:.2f}s | "
-              f"mediana dos intervalos: {sorted(gaps)[len(gaps) // 2]:.2f}s")
+              f"mediana dos intervalos: {sorted(gaps)[len(gaps) // 2]:.2f}s | "
+              f"{len(gaps)} intervalos > 0")
+
+    # --- aperto: o outro mecanismo ----------------------------------------
+    # Se a maior pausa da fala nao chega perto do limiar de remocao, remover
+    # nao tem materia-prima e a tabela acima ja disse isso. O aperto nao
+    # depende de haver trecho morto: ele reduz TODO intervalo ao teto.
+    print("\n  Aperto: o que cada `pause_max_seconds` removeria")
+    print("  " + "-" * 62)
+    print(f"  {'teto':>8}  {'emendas':>7}  {'removido':>9}  {'do video':>9}")
+    for teto in (0.40, 0.35, 0.30, 0.25, 0.20, 0.15):
+        alvo = [g for g in gaps if g > teto]
+        removido = sum(g - teto for g in alvo)
+        print(f"  {teto:>7.2f}s  {len(alvo):>7}  {removido:>8.1f}s  "
+              f"{removido / transcript.duration:>8.1%}")
+    print("  Cada emenda e um ponto de corte no filtergraph e um risco de")
+    print("  artefato — e a coluna que decide se vale, nao so a porcentagem.")
 
     # --- hesitacoes: existem no transcript? -------------------------------
     rules = TrimConfig()

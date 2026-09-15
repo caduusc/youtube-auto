@@ -32,6 +32,29 @@ A calibracao sai da propria fala, entao acompanha o ritmo de quem gravou.
 Isso cai exatamente onde precisa: os tokens ambiguos ("e", "a", "um") sao os
 frequentes, e tem amostra sobrando; os inequivocos ("hm", "ahn") sao raros e
 caem no piso absoluto de `filler_min_seconds`, que para eles basta.
+
+Pausa: remover, ou apertar
+--------------------------
+
+Ha dois mecanismos, porque remover trecho morto nao funciona em fala
+fluente. Medido numa gravacao real de 134s: 379 palavras, mediana dos
+intervalos em 0.22s, e a maior pausa do video inteiro em 1.04s. Nao existe
+trecho morto — no limiar mais agressivo que ainda faz sentido (0.4s) o total
+removivel e 4.7%, e o teto nao sobe porque a materia-prima nao esta la.
+
+    `pause_min_seconds`  remocao: o intervalo sai quase inteiro, sobrando a
+                         margem. Poucos cortes, cada um uma batida audivel.
+
+    `pause_max_seconds`  aperto: nenhum intervalo passa deste teto, e o
+                         excesso sai do meio. Muitos cortes pequenos, e o
+                         ritmo inteiro fica mais apertado em vez de o video
+                         ganhar tres saltos.
+
+O aperto e o unico que responde a "quero mais dinamismo" numa fala sem
+trecho morto, e o custo dele e o numero de emendas: aquela gravacao de 134s
+passa de 3 pontos de corte para algumas dezenas. Cada emenda e um risco de
+artefato, e o filtergraph cresce junto — o que `plan_chunks` ja resolve, mas
+com mais um chunk por vez. Por isso o default e zero, desligado.
 """
 
 from __future__ import annotations
@@ -115,6 +138,14 @@ def filler_floor(
 
     Vale o MAIOR dos dois. O piso absoluto nunca e afrouxado por uma fala em
     que o token e naturalmente curto.
+
+    O limite disto e o espelho do que o faz funcionar: a mediana descreve o
+    uso dominante daquele token. Se alguem usasse "e" mais como hesitacao do
+    que como verbo, a mediana seria a hesitacao e o piso subiria acima dela.
+    Nao e o caso de fala normal — numa gravacao real, dos 9 "e" tres quartos
+    estavam entre 0.18s e 0.32s (verbo e conjuntura) e dois eram outliers
+    longos — mas e por isso que `filler_min_seconds` continua existindo em
+    vez de o piso ser so relativo.
     """
     absolute = rules.filler_min_seconds
     median = medians.get(token)
@@ -159,16 +190,33 @@ def find_cuts(transcript: Transcript, rules: TrimConfig) -> list[Cut]:
             token=word.word.strip(), context=context_around(words, index),
         ))
 
-    # --- pausa -------------------------------------------------------------
+    # --- pausa e aperto ----------------------------------------------------
     for index, (current, following) in enumerate(zip(words, words[1:])):
         gap = following.start - current.end
-        if gap < rules.pause_min_seconds:
+
+        if gap >= rules.pause_min_seconds:
+            # Trecho morto: sai quase inteiro, sobrando so a margem. E um
+            # corte audivel, uma batida — por isso o limiar e alto.
+            start, end = current.end + margin, following.start - margin
+            reason = "pause"
+
+        elif rules.pause_max_seconds and gap > rules.pause_max_seconds:
+            # Aperto: a pausa continua existindo, com o tamanho do teto. O
+            # excesso sai do MEIO do intervalo, para as duas palavras
+            # manterem o proprio ataque e a propria queda — tirar de uma
+            # ponta so deixa uma das duas emendada rente.
+            excess = gap - rules.pause_max_seconds
+            middle = (current.end + following.start) / 2.0
+            start, end = middle - excess / 2.0, middle + excess / 2.0
+            reason = "squeeze"
+
+        else:
             continue
-        start, end = current.end + margin, following.start - margin
+
         if end - start <= 0:
             continue
         cuts.append(Cut(
-            start=start, end=end, reason="pause",
+            start=start, end=end, reason=reason,
             context=context_around(words, index, span=3),
         ))
 
@@ -319,5 +367,6 @@ def build_plan(transcript: Transcript, rules: TrimConfig, fps: float) -> TrimPla
             n_cuts=len(cuts),
             n_pause_cuts=sum(1 for c in cuts if c.reason == "pause"),
             n_filler_cuts=sum(1 for c in cuts if c.reason == "filler"),
+            n_squeeze_cuts=sum(1 for c in cuts if c.reason == "squeeze"),
         ),
     )

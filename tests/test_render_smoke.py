@@ -372,3 +372,68 @@ def test_corte_preserva_sincronia_audio_video(smoke_config, media):
     assert dur_v == pytest.approx(trimmed, abs=0.05), f"video {dur_v} != {trimmed}"
     assert dur_a == pytest.approx(trimmed, abs=0.05), f"audio {dur_a} != {trimmed}"
     assert abs(dur_v - dur_a) < 0.02, f"dessincronia de {abs(dur_v - dur_a) * 1000:.0f}ms"
+
+
+def test_dezenas_de_emendas_sobrevivem_ao_filtergraph(smoke_config, media):
+    """O custo real do aperto de pausa: muitos pontos de corte num grafo so.
+
+    O aperto troca 3 cortes por algumas dezenas, e cada um vira um par
+    `trim`/`setpts` mais uma entrada no concat. Este teste renderiza de fato,
+    porque o que pode quebrar aqui — estouro do grafo, deriva acumulada entre
+    as trilhas — nao aparece em teste de string.
+    """
+    from pipeline.config import TrimConfig
+    from pipeline.filtergraph import Chunk, audio_trim_chain, build_graph, build_inputs
+    from pipeline.schemas import Transcript, TranscriptSegment, Word
+    from pipeline.trim import build_plan
+
+    fps = smoke_config.render.fps
+
+    # fala corrida: palavra de 0.45s a cada 0.75s, sem nenhuma pausa longa
+    words, tempo = [], 0.0
+    while tempo + 0.45 < DURATION:
+        words.append(Word(start=round(tempo, 3), end=round(tempo + 0.45, 3), word="pa"))
+        tempo += 0.75
+    transcript = Transcript(
+        input_hash="h", language="pt", model="small", duration=DURATION,
+        segments=[TranscriptSegment(id=0, start=0.0, end=words[-1].end,
+                                    text="pa " * len(words), words=words)],
+    )
+
+    plan = build_plan(transcript, TrimConfig(pause_max_seconds=0.12), fps)
+    assert plan.stats.n_squeeze_cuts > 20, plan.stats.model_dump()
+    assert plan.stats.n_pause_cuts == 0        # nenhuma pausa longa nesta fala
+    trimmed = sum(r.duration for r in plan.keep)
+
+    manifest, transcript_a, edl, assets = make_artifacts(smoke_config, media, n_broll=1)
+    work = smoke_config.work_dir / manifest.slug
+    work.mkdir(parents=True, exist_ok=True)
+
+    chunk = Chunk(0, 0.0, trimmed, [], keep=plan.keep_within(0.0, trimmed),
+                  input_start=0.0, input_duration=DURATION)
+    graph = build_graph(chunk, smoke_config.render, None)
+
+    video = work / "muitas.mp4"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y",
+         *build_inputs(chunk, media["source"], smoke_config.render),
+         "-filter_complex", graph.replace(";\n", ";"), "-map", "[vout]", "-an",
+         "-c:v", "libx264", "-crf", "35", "-preset", "ultrafast",
+         "-r", f"{fps:g}", str(video)],
+        check=True, capture_output=True,
+    )
+    audio = work / "muitas.m4a"
+    keep_pairs = [(r.start, r.end) for r in plan.keep]
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-i", str(media["source"]), "-vn",
+         "-filter_complex", audio_trim_chain(keep_pairs), "-map", "[aout]",
+         "-c:a", "aac", "-b:a", "192k", str(audio)],
+        check=True, capture_output=True,
+    )
+
+    dur_v = float(ffprobe(video, "format=duration"))
+    dur_a = float(ffprobe(audio, "format=duration"))
+    assert dur_v == pytest.approx(trimmed, abs=0.08), f"video {dur_v} != {trimmed}"
+    # a deriva que o alinhamento ao grid de frames existe para evitar, agora
+    # com uma ordem de magnitude mais de cortes para acumular
+    assert abs(dur_v - dur_a) < 0.05, f"dessincronia de {abs(dur_v - dur_a) * 1000:.0f}ms"

@@ -374,3 +374,82 @@ def test_mediana_nao_e_media(rules):
     words.append(Word(start=9.0, end=9.9, word="e"))        # a hesitacao
     assert token_medians(words)["e"] == pytest.approx(0.2)   # media daria 0.317
 
+
+
+# --------------------------------------------------------------------------
+# aperto de pausa: o mecanismo para fala fluente
+# --------------------------------------------------------------------------
+
+
+def test_aperto_desligado_por_default(rules):
+    """Muitas emendas e um custo real, entao o default nao liga sozinho."""
+    assert rules.pause_max_seconds == 0.0
+    t = fala(("uma", 0.00, 0.30), ("frase", 0.75, 1.20))   # gap de 0.45s
+    assert find_cuts(t, rules) == []
+
+
+def test_aperto_deixa_a_pausa_no_tamanho_do_teto():
+    rules = TrimConfig(pause_max_seconds=0.20)
+    t = fala(("uma", 0.00, 0.30), ("frase", 0.80, 1.20))   # gap de 0.50s
+    cuts = find_cuts(t, rules)
+    assert [c.reason for c in cuts] == ["squeeze"]
+    # sobra exatamente o teto, nao zero: a pausa continua existindo
+    assert cuts[0].duration == pytest.approx(0.50 - 0.20)
+
+
+def test_aperto_tira_do_meio_do_intervalo():
+    """De uma ponta so, uma das duas palavras fica emendada rente."""
+    rules = TrimConfig(pause_max_seconds=0.20)
+    t = fala(("uma", 0.00, 0.30), ("frase", 0.80, 1.20))
+    cut = find_cuts(t, rules)[0]
+    assert cut.start - 0.30 == pytest.approx(0.10)   # sobra 0.10s de cada lado
+    assert 0.80 - cut.end == pytest.approx(0.10)
+
+
+def test_pausa_longa_ainda_e_removida_e_nao_apertada():
+    """O teto nao rebaixa a remocao: acima de `pause_min_seconds` continua
+    saindo quase inteira, que e a batida audivel."""
+    rules = TrimConfig(pause_max_seconds=0.20, pause_min_seconds=0.8)
+    t = fala(("acabou", 0.00, 0.50), ("segue", 2.00, 2.60))
+    cuts = find_cuts(t, rules)
+    assert [c.reason for c in cuts] == ["pause"]
+    assert cuts[0].duration == pytest.approx(1.50 - 2 * rules.keep_margin_seconds)
+
+
+def test_intervalo_abaixo_do_teto_nao_e_tocado():
+    rules = TrimConfig(pause_max_seconds=0.30)
+    t = fala(("uma", 0.00, 0.30), ("frase", 0.55, 1.00))   # gap de 0.25s
+    assert find_cuts(t, rules) == []
+
+
+def test_aperto_rende_mais_que_remocao_em_fala_fluente():
+    """O caso que motivou o mecanismo: intervalos medios, nenhum longo.
+
+    Seis intervalos de 0.5s. A remocao com limiar 0.8 nao pega nenhum; o
+    aperto em 0.2 tira 0.3s de cada um.
+    """
+    tokens = [(f"p{i}", i * 1.0, i * 1.0 + 0.5) for i in range(7)]
+    t = fala(*tokens)                                      # gaps de 0.5s
+
+    so_remocao = build_plan(t, TrimConfig(), FPS)
+    assert so_remocao.stats.n_cuts == 0
+
+    com_aperto = build_plan(t, TrimConfig(pause_max_seconds=0.2), FPS)
+    assert com_aperto.stats.n_squeeze_cuts == 6
+    assert com_aperto.stats.removed_seconds == pytest.approx(6 * 0.3, abs=0.05)
+
+
+def test_aperto_entra_na_chave_de_cache():
+    t = fala(("uma", 0.00, 0.30), ("frase", 0.80, 1.20))
+    a = build_plan(t, TrimConfig(), FPS)
+    b = build_plan(t, TrimConfig(pause_max_seconds=0.2), FPS)
+    assert a.input_hash != b.input_hash
+
+
+def test_estatisticas_fecham_com_aperto():
+    rules = TrimConfig(pause_max_seconds=0.2)
+    tokens = [(f"p{i}", i * 1.0, i * 1.0 + 0.5) for i in range(5)]
+    plan = build_plan(fala(*tokens), rules, FPS)
+    s = plan.stats
+    assert s.n_cuts == s.n_pause_cuts + s.n_filler_cuts + s.n_squeeze_cuts
+    assert s.trimmed_seconds == pytest.approx(sum(r.duration for r in plan.keep), abs=1e-3)

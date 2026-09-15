@@ -53,6 +53,10 @@ class TrimConfig(BaseModel):
 
     enabled: bool = True
     pause_min_seconds: float = 0.8
+    # Teto para TODA pausa, nao limiar de remocao. Zero desliga. Ver o
+    # docstring de `trim.py`: e o unico lever que funciona em fala fluente,
+    # onde nao ha trecho morto para remover.
+    pause_max_seconds: float = 0.0
     filler_min_seconds: float = 0.40
     filler_silence_seconds: float = 0.25
     # Quantas vezes a mediana daquele token na propria fala. E o que separa
