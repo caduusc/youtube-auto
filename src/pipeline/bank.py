@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS assets (
     origin        TEXT    NOT NULL CHECK (origin IN ('stock', 'generated')),
     embedding     BLOB    NOT NULL,
     embedding_dim INTEGER NOT NULL,
+    embedding_model TEXT  NOT NULL DEFAULT '',
     cost_usd      REAL    NOT NULL DEFAULT 0.0,
     created_at    TEXT    NOT NULL,
     use_count     INTEGER NOT NULL DEFAULT 0,
@@ -89,7 +90,35 @@ class AssetBank:
         self.conn = sqlite3.connect(self.db_path)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.commit()
+
+    @property
+    def model_name(self) -> str:
+        """Identifica o espaco vetorial das comparacoes."""
+        return getattr(self.embedder, "model_name", "unknown")
+
+    def _migrate(self) -> None:
+        """Banco criado antes da coluna `embedding_model`.
+
+        As linhas existentes recebem o modelo atual: e o que quase certamente
+        as produziu, e o alternativo — deixar em branco — orfanaria todo o
+        banco de quem ja tinha assets.
+        """
+        columns = {row[1] for row in self.conn.execute("PRAGMA table_info(assets)")}
+        if "embedding_model" not in columns:
+            self.conn.execute(
+                "ALTER TABLE assets ADD COLUMN embedding_model TEXT NOT NULL DEFAULT ''"
+            )
+        pending = self.conn.execute(
+            "SELECT COUNT(*) AS n FROM assets WHERE embedding_model = ''"
+        ).fetchone()["n"]
+        if pending:
+            self.conn.execute(
+                "UPDATE assets SET embedding_model = ? WHERE embedding_model = ''",
+                (self.model_name,),
+            )
+            log("bank.migrated", rows=pending, assumed_model=self.model_name)
 
     def close(self) -> None:
         self.conn.close()
@@ -150,12 +179,23 @@ class AssetBank:
         # Banco vazio nao tem o que comparar, e o embedder arrasta o torch:
         # no primeiro video, e o que deixa o --dry-run responder na hora em
         # vez de esperar 400MB de modelo carregar para nada.
-        if not self.conn.execute("SELECT 1 FROM assets LIMIT 1").fetchone():
+        if not self.conn.execute(
+            "SELECT 1 FROM assets WHERE embedding_model = ? LIMIT 1", (self.model_name,)
+        ).fetchone():
             return None
 
         target = self.embedder.embed(concept)
         best: tuple[Asset, float] | None = None
-        for row in self.conn.execute("SELECT * FROM assets"):
+
+        # Compara so contra vetores do MESMO modelo. Dois modelos diferentes
+        # podem ter a mesma dimensao (all-MiniLM-L6-v2 e o multilingue tem
+        # 384 os dois), entao a checagem de tamanho no cosseno nao pega a
+        # troca: seriam similaridades sem sentido, reusando imagem errada em
+        # silencio.
+        rows = self.conn.execute(
+            "SELECT * FROM assets WHERE embedding_model = ?", (self.model_name,)
+        )
+        for row in rows:
             if row["id"] in exclude_ids:
                 continue
             if not self.absolute(row["path"]).exists():
@@ -174,9 +214,10 @@ class AssetBank:
         vector = embedding if embedding is not None else self.embedder.embed(concept)
         cursor = self.conn.execute(
             """INSERT INTO assets (path, concept, prompt, origin, embedding, embedding_dim,
-                                   cost_usd, created_at, use_count, last_used_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)""",
-            (path, concept, prompt, origin, pack(vector), len(vector), cost_usd, now_iso()),
+                                   embedding_model, cost_usd, created_at, use_count, last_used_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)""",
+            (path, concept, prompt, origin, pack(vector), len(vector),
+             self.model_name, cost_usd, now_iso()),
         )
         self.conn.commit()
         row = self.conn.execute("SELECT * FROM assets WHERE id = ?", (cursor.lastrowid,)).fetchone()
@@ -202,9 +243,16 @@ class AssetBank:
             for r in self.conn.execute("SELECT origin, COUNT(*) AS n FROM assets GROUP BY origin")
         }
         never = self.conn.execute("SELECT COUNT(*) AS n FROM assets WHERE use_count = 0").fetchone()["n"]
+        by_model = {
+            r["embedding_model"]: r["n"]
+            for r in self.conn.execute(
+                "SELECT embedding_model, COUNT(*) AS n FROM assets GROUP BY embedding_model")
+        }
         return {
             "assets": row["n"],
             "by_origin": by_origin,
+            "by_model": by_model,
+            "active_model": self.model_name,
             "total_spent_usd": round(row["spent"], 4),
             "total_uses": row["uses"],
             "never_used": never,

@@ -74,8 +74,21 @@ transcribe:
 bank:
   db_path: assets/bank.db
   images_dir: assets/images
-  # Modelo de embedding local. 384 dimensoes, ~120MB, multilingue.
-  embedding_model: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+  # Modelo de embedding local. 384 dimensoes, ~90MB de download.
+  #
+  # E ingles de proposito, apesar de o video ser em portugues: o banco so
+  # embeda o campo `concept`, que o estagio 3 sempre escreve em ingles. O
+  # transcript nunca passa por aqui. Um modelo multilingue seria 471MB para
+  # nenhum ganho — e 471MB de download falha muito mais.
+  #
+  # Se voce quiser embedar texto em portugues por algum motivo, troque para
+  # `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`. ATENCAO:
+  # trocar de modelo invalida o banco existente. Os dois tem 384 dimensoes,
+  # entao a comparacao nao falharia por tamanho — ela daria numeros sem
+  # sentido. O banco guarda qual modelo gerou cada linha e so compara dentro
+  # do mesmo, entao o que acontece de fato e que os assets antigos param de
+  # ser reusados e o `bank stats` mostra as duas familias.
+  embedding_model: sentence-transformers/all-MiniLM-L6-v2
   # Similaridade de cosseno minima para reusar uma imagem do banco.
   # 0.82 e conservador. Abaixo de ~0.75 comeca a reusar imagem que nao
   # ilustra o trecho; acima de ~0.90 o reuso praticamente nao acontece e a
