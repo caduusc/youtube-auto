@@ -187,22 +187,54 @@ alimenta o aviso de upscale.
 
 Medido, não estimado:
 
-    prep_size:            4302 x 2422   (saída 1920x1080, canvas 2x, zoom_max 1.12)
-    Ken Burns exige:      2150 x 1210   (para nunca ampliar)
+    prep_size:            4304 x 2420   (saída 1920x1080, canvas 2x, zoom_max 1.12)
+    Ken Burns exige:      2151 x 1210   (para nunca ampliar)
 
-    full                 4302 x 2422  -> nativo
-    quadrante (metade)   2151 x 1211  -> nativo, exatamente no limite
-    um terço             1434 x  807  -> amplia 1.50x
+    full                 4304 x 2420  -> nativo
+    quadrante (metade)   2152 x 1210  -> nativo, exatamente no limite
+    um terço             1434 x  806  -> amplia 1.50x
 
 O quadrante bate no limite por construção: `prep_size = largura x canvas_scale x
 zoom_max`, então metade disso é `largura x zoom_max` sempre que `canvas_scale = 2`.
 A invariante é **canvas_scale 2 <=> quadrante exatamente nativo**, qualquer que
 seja o `zoom_max`.
 
+`prep_size` arredonda para cima em múltiplo de **4**, e não de 2, exatamente por
+causa disso: metade de um múltiplo de 4 ainda é par, então o `crop` do quadrante
+nunca precisa arredondar — e arredondaria para baixo justamente onde a margem é
+de 0.6px.
+
 Consequência: **4 sub-planos é o teto real** (os quatro quadrantes). Nove (3x3)
 exigiriam `canvas_scale: 3`, ou seja uma imagem de 6453px — nenhum modelo entrega.
 
 Regiões: `full`, `top_left`, `top_right`, `bottom_left`, `bottom_right`.
+
+### O que o quadrante custa (não estava neste plano)
+
+Duas coisas que só apareceram na implementação:
+
+1. **A margem de subpixel do movimento acaba.** No plano cheio o passo de 1px do
+   `crop` cai numa tela 2x e vira meio pixel na saída; no quadrante a tela de
+   trabalho *já é* a saída. Não aparece porque sub-plano é curto por construção
+   (a 2.5s o pan anda 3px por frame); um sub-plano de 10s andaria 0.8px por frame
+   e aí o degrau apareceria.
+2. **A imagem amplia o dobro na tela.** O fator do `prep` é o mesmo, mas o plano
+   cheio é reduzido de volta no fim do Ken Burns e o quadrante não. Uma imagem de
+   1344px amplia 1.6x no plano cheio e **3.2x** no quadrante. É por isso que o
+   `upscale_warn_factor` mede o quadrante quando o sub-plano está ligado: medir o
+   plano cheio diria que 1344px está folgado.
+
+### De onde vem a contagem de planos
+
+O plano previa `sub_shots` gravado em `assets.json`. Na implementação a contagem
+sai da **duração da faixa** dividida por `sub_shot_seconds`, e não do número que o
+storyboard pediu. O storyboard escolhe de fato o *tempo de tela* do beat
+(`sub_shots * seconds_per_shot`); o tamanho exato da faixa só o alinhamento sabe,
+e ele cresce em segmento inteiro, então a faixa sobra um pouco. Dividir a faixa
+real mantém o **ritmo** que o config pede; usar o número do storyboard manteria a
+contagem e esticaria cada plano. O ritmo é o que se vê. Como efeito colateral, o
+caminho antigo (EDL vinda do `planner`) ganha sub-planos de graça: uma faixa de
+20s vira quatro planos de 5s sem nenhuma imagem nova.
 
 ## A UI
 

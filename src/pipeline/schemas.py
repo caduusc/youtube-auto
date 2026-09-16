@@ -437,18 +437,31 @@ class Storyboard(BaseModel):
         return len(self.beats)
 
 
+Region = Literal["full", "top_left", "top_right", "bottom_left", "bottom_right"]
+
+# A ordem em que os sub-planos varrem a imagem, e ao mesmo tempo o teto de
+# quantos existem. Comeca no plano cheio para o espectador ver o conjunto
+# antes do detalhe, e os quadrantes seguem em diagonal para que dois planos
+# consecutivos nunca compartilhem uma borda — com `top_left` seguido de
+# `top_right` o corte seco pareceria um pan aos saltos em vez de um corte.
+SUB_SHOT_ORDER: tuple[Region, ...] = (
+    "full", "top_left", "bottom_right", "top_right", "bottom_left",
+)
+
+
 class SubShot(BaseModel):
     """Um plano tirado de uma regiao da imagem, ja na timeline.
 
     A regiao e escolhida pelo pipeline e nao pelo modelo: o limite e
-    geometrico. Ver `render.sub_shot_regions` e o plano — com `canvas_scale: 2`
-    o quadrante e exatamente nativo em 1080p, e um terco ampliaria 1.5x.
+    geometrico. Ver `canvas_for` e `region_chain` em `filtergraph.py` — com
+    `canvas_scale: 2` o quadrante e exatamente nativo em 1080p, e um terco
+    ampliaria 1.5x.
     """
 
     index: int
     start: float
     end: float
-    region: Literal["full", "top_left", "top_right", "bottom_left", "bottom_right"]
+    region: Region
     direction: str
 
     @property

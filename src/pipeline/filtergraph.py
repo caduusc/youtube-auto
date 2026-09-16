@@ -29,16 +29,35 @@ Uma consequencia do `eval=frame`: o link de saida do `scale` muda de tamanho
 a cada frame e o `crop` seguinte reconfigura. Verificado funcionando no
 ffmpeg 6.1. Se a sua build reclamar, `render.ken_burns.engine: zoompan` no
 config troca o motor.
+
+**Sub-planos.** Uma faixa longa de b-roll nao precisa ser um plano so: o
+mesmo arquivo pode dar varios planos, cada um recortando uma regiao
+diferente da imagem. O recorte acontece antes do Ken Burns, na tela
+preparada, e nao custa imagem nova — e por isso que ele existe, porque
+imagem gerada e o unico item caro do pipeline.
+
+A geometria fecha exatamente e nao por sorte: `prep_size` e
+`largura * canvas_scale * zoom_max`, entao com `canvas_scale: 2` metade dele
+e `largura * zoom_max` — o tamanho que o Ken Burns pede para nunca ampliar.
+A invariante e `canvas_scale: 2` <=> quadrante nativo, qualquer que seja o
+`zoom_max`. O que o quadrante perde e a margem de subpixel: no plano cheio o
+passo de 1px do crop cai numa tela 2x e vira meio pixel na saida, no
+quadrante a tela de trabalho JA e a saida e o passo e de 1px inteiro. Nao
+aparece porque sub-plano e curto por construcao (`sub_shot_seconds`): a
+2.5s o pan anda 3px por frame. Um sub-plano de 10s andaria 0.8px por frame e
+ai o degrau apareceria.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from math import ceil
 from pathlib import Path
 
 from .config import RenderConfig
 from .log import log
+from .schemas import SUB_SHOT_ORDER, Region
 
 
 @dataclass
@@ -49,6 +68,13 @@ class Overlay:
     end: float
     direction: str
     image_path: Path | None = None   # None -> fallback de cor solida
+    region: Region = "full"
+    # Fades de alpha das duas pontas, em segundos. `None` deriva da duracao
+    # do proprio plano, que e o caso de um b-roll de um plano so. Entre
+    # sub-planos da mesma imagem eles sao 0.0: ali o corte e seco, e um fade
+    # faria a sua imagem reaparecer por 400ms no meio da faixa.
+    fade_in: float | None = None
+    fade_out: float | None = None
 
     @property
     def duration(self) -> float:
@@ -139,10 +165,40 @@ def fade_for(duration: float, cfg: RenderConfig) -> float:
     return min(cfg.crossfade_seconds, max(0.0, duration) * cfg.max_fade_ratio)
 
 
+def region_chain(region: Region) -> str:
+    """Prefixo que recorta a regiao da tela preparada. Vazio no plano cheio.
+
+    As fracoes saem de `iw`/`ih` e nao de numeros literais para o recorte
+    continuar valendo se `prep_size` mudar — e `prep_size` e multiplo de 4
+    justamente para que `iw/2` caia em pixel par e o crop nunca arredonde.
+    """
+    if region == "full":
+        return ""
+    if region not in SUB_SHOT_ORDER:
+        raise ValueError(f"regiao de sub-plano desconhecida: {region!r}")
+    x = "0" if region.endswith("_left") else "(iw-ow)"
+    y = "0" if region.startswith("top_") else "(ih-oh)"
+    return f"crop=iw/2:ih/2:{x}:{y},"
+
+
+def canvas_for(region: Region, cfg: RenderConfig) -> tuple[int, int]:
+    """Tela de trabalho do Ken Burns deste plano.
+
+    No plano cheio e a tela 2x de sempre. No quadrante a fonte tem metade do
+    tamanho em cada eixo, entao a tela tambem tem: com `canvas_scale: 2` o
+    quadrante da exatamente a resolucao de saida, e o `scale` animado segue
+    reduzindo. Manter a tela 2x aqui pediria um upscale de 2x de pixel que o
+    `prep` ja interpolou uma vez — nao criaria detalhe nenhum, so amoleceria.
+    """
+    fraction = 1.0 if region == "full" else 0.5
+    scale = cfg.ken_burns.canvas_scale * fraction
+    return int(cfg.width * scale) // 2 * 2, int(cfg.height * scale) // 2 * 2
+
+
 def ken_burns_chain(overlay: Overlay, cfg: RenderConfig) -> str:
     """Filtros de Ken Burns para uma imagem, sem os labels de entrada/saida."""
-    canvas_w = cfg.width * cfg.ken_burns.canvas_scale
-    canvas_h = cfg.height * cfg.ken_burns.canvas_scale
+    canvas_w, canvas_h = canvas_for(overlay.region, cfg)
+    region = region_chain(overlay.region)
     duration = overlay.duration
 
     z0, z1, fx, fy = _zoom_and_pan(overlay.direction, cfg)
@@ -150,7 +206,7 @@ def ken_burns_chain(overlay: Overlay, cfg: RenderConfig) -> str:
         _ramp(1.0, 0.0, duration) if fx == "RAMP_1_0" else fx)
 
     if cfg.ken_burns.engine == "zoompan":
-        return _zoompan_chain(overlay, cfg, z0, z1, canvas_w, canvas_h)
+        return _zoompan_chain(overlay, cfg, z0, z1, region)
 
     # --- scale_crop (default) ---------------------------------------------
     if abs(z1 - z0) < 1e-9:
@@ -164,14 +220,14 @@ def ken_burns_chain(overlay: Overlay, cfg: RenderConfig) -> str:
         )
 
     return (
-        f"{scale},"
+        f"{region}{scale},"
         f"crop={canvas_w}:{canvas_h}:x='(iw-ow)*{fx}':y='(ih-oh)*{fy}',"
         f"scale={cfg.width}:{cfg.height}:flags=bicubic"
     )
 
 
 def _zoompan_chain(overlay, cfg: RenderConfig, z0: float, z1: float,
-                   canvas_w: int, canvas_h: int) -> str:
+                   region: str) -> str:
     """Escape hatch. Treme mais, mas nao depende de reconfiguracao por frame.
 
     O `select` na frente nao e decorativo: o `d` do zoompan conta frames de
@@ -182,8 +238,10 @@ def _zoompan_chain(overlay, cfg: RenderConfig, z0: float, z1: float,
     """
     frames = max(1, int(round(overlay.duration * cfg.fps)))
     zoom = f"{z0:.6f}+({z1 - z0:.6f})*on/{frames}"
+    # O recorte da regiao vem DEPOIS do select: antes dele, ele rodaria em
+    # cada frame de entrada do `-loop 1` para ser descartado em seguida.
     return (
-        f"select='eq(n\\,0)',"
+        f"select='eq(n\\,0)',{region}"
         f"zoompan=z='{zoom}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
         f":d={frames}:s={cfg.width}x{cfg.height}:fps={cfg.fps:g}"
     )
@@ -199,11 +257,20 @@ def prep_size(cfg: RenderConfig) -> tuple[int, int]:
 
     E a tela 2x multiplicada pelo zoom maximo, para que o `scale` animado
     sempre reduza — nunca amplie — e a imagem nao amoleca no zoom fechado.
+
+    Arredonda para cima em multiplo de 4, e nao de 2, por causa do sub-plano:
+    o quadrante e metade desta tela, e metade de um multiplo de 4 ainda e
+    par. Sem isso, 1920x1080 com canvas 2x e zoom 1.12 daria 4302 e o
+    quadrante sairia com 2151 — impar, e o `crop` teria que arredondar para
+    baixo exatamente onde a margem para nao ampliar e de 0.6px (2150.4 e o
+    que o Ken Burns pede). Com 4304, o quadrante e 2152 e sobra.
     """
     scale = cfg.ken_burns.canvas_scale * cfg.ken_burns.zoom_max
-    width = int(cfg.width * scale + 1) // 2 * 2 + 2
-    height = int(cfg.height * scale + 1) // 2 * 2 + 2
-    return width, height
+    return _up_to_four(cfg.width * scale), _up_to_four(cfg.height * scale)
+
+
+def _up_to_four(value: float) -> int:
+    return -(-int(ceil(value)) // 4) * 4
 
 
 def video_trim_chain(keep: list[tuple[float, float]]) -> str:
@@ -263,14 +330,25 @@ def build_graph(
         else:
             visual = ken_burns_chain(overlay, cfg)
 
-        fade = fade_for(overlay.duration, cfg)
-        fade_out_at = max(0.0, overlay.duration - fade)
-        parts.append(
-            f"[{position}:v]{visual},setsar=1,format=yuva420p,"
-            f"fade=t=in:st=0:d={fade:g}:alpha=1,"
-            f"fade=t=out:st={fade_out_at:.3f}:d={fade:g}:alpha=1,"
-            f"setpts=PTS+{overlay.start:.3f}/TB[{label}]"
-        )
+        # Um plano so deriva o fade da propria duracao; sub-plano recebe o
+        # fade da faixa inteira nas pontas e 0.0 nas emendas internas. Fade de
+        # duracao zero sai do grafo em vez de virar `d=0`: o que se quer ali e
+        # corte seco, e um filtro a menos e uma coisa a menos para o ffmpeg
+        # interpretar como "sem fade".
+        derived = fade_for(overlay.duration, cfg)
+        fade_in = derived if overlay.fade_in is None else overlay.fade_in
+        fade_out = derived if overlay.fade_out is None else overlay.fade_out
+
+        chain = [f"[{position}:v]{visual}", "setsar=1", "format=yuva420p"]
+        if fade_in > 0:
+            chain.append(f"fade=t=in:st=0:d={fade_in:g}:alpha=1")
+        if fade_out > 0:
+            chain.append(
+                f"fade=t=out:st={max(0.0, overlay.duration - fade_out):.3f}"
+                f":d={fade_out:g}:alpha=1"
+            )
+        chain.append(f"setpts=PTS+{overlay.start:.3f}/TB[{label}]")
+        parts.append(",".join(chain))
 
         nxt = f"base{position}"
         parts.append(
@@ -327,9 +405,13 @@ def plan_chunks(
 ) -> list[Chunk]:
     """Divide a timeline em chunks cujo filtergraph cabe no limite do config.
 
-    Os cortes caem no inicio de um b-roll. Como os dois fades de alpha vivem
-    dentro do proprio segmento de b-roll, nenhuma transicao atravessa a
-    fronteira de um chunk — o corte acontece em a-roll puro.
+    Os cortes caem no inicio de um overlay. Como os dois fades de alpha vivem
+    dentro do proprio overlay, nenhuma transicao atravessa a fronteira de um
+    chunk. Com sub-planos a fronteira pode cair dentro de uma faixa de
+    b-roll, numa emenda entre dois planos da mesma imagem — e continua
+    valendo, porque ali o corte ja e seco: nao ha fade nenhum para partir ao
+    meio, e o ponto de concat coincide com um corte visual em vez de cair no
+    meio de um movimento.
     """
     def finish(chunk: Chunk) -> Chunk:
         """Preenche a janela de entrada e os trechos a manter do chunk."""
@@ -380,7 +462,7 @@ def _warn_if_over(chunks: list[Chunk], cfg: RenderConfig) -> list[Chunk]:
 
     Nao ha fallback automatico porque nao existe um bom: partir no meio de
     uma emenda mudaria o corte, e o que resolve de verdade e subir o
-    `max_filtergraph_chars` (o limite de 3000 e conservador) ou afrouxar o
+    `max_filtergraph_chars` ou afrouxar o
     `pause_max_seconds`. O aviso diz qual dos dois.
     """
     for chunk in chunks:
@@ -398,6 +480,7 @@ def _localize(overlays: list[Overlay], chunk_start: float) -> list[Overlay]:
     """Reposiciona os overlays para o tempo local do chunk."""
     return [
         Overlay(start=o.start - chunk_start, end=o.end - chunk_start,
-                direction=o.direction, image_path=o.image_path)
+                direction=o.direction, image_path=o.image_path, region=o.region,
+                fade_in=o.fade_in, fade_out=o.fade_out)
         for o in overlays
     ]

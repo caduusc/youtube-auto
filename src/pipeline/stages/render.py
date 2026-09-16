@@ -15,16 +15,60 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..config import Config
+from ..config import Config, RenderConfig
+from ..ffmpeg import probe
 from ..ffmpeg import run as ffmpeg
 from ..filtergraph import (
     Chunk, Overlay, audio_trim_chain, build_graph, build_inputs,
-    frame_align, plan_chunks, prep_size,
+    fade_for, frame_align, plan_chunks, prep_size,
 )
 from ..log import log, stage
-from ..schemas import EDL, Assets, Manifest, Transcript, TrimPlan
+from ..schemas import EDL, SUB_SHOT_ORDER, Assets, Manifest, Region, Transcript, TrimPlan
 from ..subtitles import write_ass
 from ..util import text_hash
+
+
+def upscale_factor(source_width: int, region: Region, cfg: RenderConfig) -> float:
+    """Quanto a imagem e ampliada NA TELA num plano deste tipo.
+
+    Nao e o fator do `prep`, que e igual para os dois: o plano cheio e
+    reduzido de volta no fim do Ken Burns, enquanto o quadrante ja sai na
+    resolucao de saida. Por isso o MESMO arquivo amplia o dobro num
+    sub-plano — sao metade dos pixels da fonte preenchendo a mesma tela.
+
+    Com uma imagem de 1344px de largura e saida em 1080p: 1.6x no plano
+    cheio, 3.2x no quadrante. E o numero que separa as duas explicacoes para
+    o "delirio" percebido — aderencia do modelo ao prompt, ou resolucao de
+    origem insuficiente para o plano em que ela aparece.
+    """
+    fraction = 1.0 if region == "full" else 0.5
+    return (cfg.width * cfg.ken_burns.zoom_max) / (source_width * fraction)
+
+
+def sub_shots_enabled(cfg: RenderConfig) -> bool:
+    return cfg.sub_shot_seconds > 0 and cfg.max_sub_shots > 1
+
+
+def _warn_if_small(source: Path, relative: str, cfg: RenderConfig) -> None:
+    """Avisa quando a fonte nao tem pixel para o plano em que ela vai entrar.
+
+    Mede o pior plano que este config pode pedir, nao o melhor: com sub-plano
+    ligado o quadrante e o que manda, porque e ele que vai preencher a tela
+    com metade da imagem.
+    """
+    stream = next(
+        (s for s in probe(source)["streams"] if s["codec_type"] == "video"), None
+    )
+    if stream is None:
+        return
+    region: Region = "top_left" if sub_shots_enabled(cfg) else "full"
+    factor = upscale_factor(int(stream["width"]), region, cfg)
+    if factor > cfg.upscale_warn_factor:
+        log("render.warn",
+            detail=f"{relative} tem {stream['width']}x{stream['height']} e amplia "
+                   f"{factor:.1f}x no plano '{region}' (teto "
+                   f"{cfg.upscale_warn_factor:g}x): gere a imagem maior, ou desligue "
+                   f"o sub-plano com render.sub_shot_seconds: 0")
 
 
 def prepare_images(assets: Assets, config: Config, work: Path) -> dict[int, Path]:
@@ -47,6 +91,8 @@ def prepare_images(assets: Assets, config: Config, work: Path) -> dict[int, Path
             log("render.warn", detail=f"imagem ausente, virou cor solida: {item.path}")
             continue
 
+        _warn_if_small(source, item.path, config.render)
+
         target = prep_dir / f"{text_hash(item.path, width, height)[:16]}.png"
         if not target.exists():
             ffmpeg([
@@ -61,24 +107,67 @@ def prepare_images(assets: Assets, config: Config, work: Path) -> dict[int, Path
     return prepared
 
 
+def sub_shot_count(duration: float, cfg: RenderConfig) -> int:
+    """Quantos planos tirar de uma faixa de b-roll desta duracao.
+
+    O numero sai da DURACAO da faixa e nao do `sub_shots` que o storyboard
+    pediu, de proposito. O storyboard e escrito antes de existir gravacao, e
+    o que ele escolhe de fato e o tempo de tela do beat
+    (`sub_shots * seconds_per_shot`); onde aquele trecho caiu na fala real —
+    e portanto o tamanho exato da faixa — so o alinhamento sabe, e ele cresce
+    em segmento inteiro, entao a faixa costuma sobrar um pouco. Dividir a
+    faixa real por `sub_shot_seconds` mantem o RITMO que o config pede; usar
+    o numero do storyboard manteria a contagem e esticaria cada plano. O
+    ritmo e o que se ve.
+
+    Piso 1 e teto `max_sub_shots`: faixa curta nao vira meio plano, e faixa
+    longa nao inventa regiao que nao existe. `sub_shot_seconds: 0` desliga.
+    """
+    if cfg.sub_shot_seconds <= 0:
+        return 1
+    return max(1, min(cfg.max_sub_shots, int(duration / cfg.sub_shot_seconds)))
+
+
 def build_overlays(edl: EDL, prepared: dict[int, Path], config: Config) -> list[Overlay]:
-    """Um overlay por segmento de b-roll, com a direcao do Ken Burns
-    alternando entre segmentos consecutivos."""
+    """Overlays de b-roll, com a faixa longa partida em sub-planos.
+
+    Cada sub-plano recorta uma regiao diferente da MESMA imagem, e a emenda
+    entre dois deles e corte seco: o fade de alpha existe para a fronteira
+    com o a-roll, e no meio da faixa ele faria a sua imagem reaparecer por
+    400ms. Por isso so o primeiro plano recebe fade de entrada e so o ultimo
+    recebe fade de saida, os dois dimensionados pela faixa inteira.
+
+    Sem imagem nao ha sub-plano: o fallback de cor solida nao tem regiao
+    para recortar, e cortar entre dois pedacos da mesma cor nao existe.
+
+    A direcao do Ken Burns anda por PLANO e nao por faixa, entao dois planos
+    consecutivos da mesma imagem nunca se movem do mesmo jeito — o que, junto
+    com a diagonal de `SUB_SHOT_ORDER`, e o que faz a emenda parecer corte.
+    """
     directions = config.render.ken_burns.directions
     fps = config.render.fps
     overlays: list[Overlay] = []
-    ordinal = 0
+    shot = 0
 
     for index, segment in enumerate(edl.segments):
         if segment.kind != "broll":
             continue
-        overlays.append(Overlay(
-            start=frame_align(segment.start, fps),
-            end=frame_align(segment.end, fps),
-            direction=directions[ordinal % len(directions)],
-            image_path=prepared.get(index),
-        ))
-        ordinal += 1
+        image = prepared.get(index)
+        start, end = frame_align(segment.start, fps), frame_align(segment.end, fps)
+        count = 1 if image is None else sub_shot_count(end - start, config.render)
+        fade = fade_for(end - start, config.render)
+        edges = [frame_align(start + (end - start) * i / count, fps) for i in range(count)]
+        edges.append(end)
+
+        for position, region in enumerate(SUB_SHOT_ORDER[:count]):
+            overlays.append(Overlay(
+                start=edges[position], end=edges[position + 1],
+                direction=directions[shot % len(directions)],
+                image_path=image, region=region,
+                fade_in=fade if position == 0 else 0.0,
+                fade_out=fade if position == count - 1 else 0.0,
+            ))
+            shot += 1
 
     return overlays
 
@@ -194,7 +283,8 @@ def run(
 
         chunks = plan_chunks(overlays, duration, config.render, window)
 
-        log("render.plan", chunks=len(chunks), overlays=len(overlays),
+        log("render.plan", chunks=len(chunks), planos=len(overlays),
+            imagens=len(prepared),
             cortes=sum(len(c.keep) for c in chunks) if window else 0,
             mode="passe unico" if len(chunks) == 1 else "chunks + concat")
 

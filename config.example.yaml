@@ -306,7 +306,42 @@ render:
   solid_fallback_color: "0x1B2A33"
   # Acima deste tamanho o filtergraph e quebrado em chunks por janela de
   # tempo e concatenado no final com o demuxer concat.
-  max_filtergraph_chars: 3000
+  #
+  # Medido, com 6 imagens de b-roll num video de 15 min: 24 planos (quatro
+  # sub-planos por imagem) dao um grafo de 9092 chars, e as emendas do aperto
+  # de pausa somam por cima. Com 3000 o mesmo video sairia em 4 chunks — que
+  # funciona (a duracao e o audio estao sob teste), mas sao 4 passes de encode
+  # em vez de 1. Com 16000 ele sai em passe unico.
+  #
+  # O teto real nao e este numero: o grafo vai inline no `-filter_complex`, e
+  # no Windows a linha de comando inteira nao passa de ~32767 chars. 16000
+  # deixa folga para as entradas e os caminhos.
+  max_filtergraph_chars: 16000
+
+  # --- sub-planos -----------------------------------------------------------
+  # Varios planos tirados da MESMA imagem, cada um recortando uma regiao
+  # diferente dela. Existe porque imagem gerada e o unico item caro do
+  # pipeline: uma faixa de 10s com quatro planos custa uma imagem, nao quatro.
+  #
+  # Uma faixa de b-roll e dividida por `sub_shot_seconds` para descobrir
+  # quantos planos ela leva, com piso 1 e teto `max_sub_shots`. Entre dois
+  # planos da mesma imagem o corte e seco, sem fade — o fade existe para a
+  # fronteira com a sua imagem, e no meio da faixa ele faria voce reaparecer
+  # por 400ms.
+  #
+  # O teto de 4 e geometrico e nao de gosto: com `canvas_scale: 2` o quadrante
+  # da tela preparada tem exatamente o tamanho que o Ken Burns precisa para
+  # nunca ampliar, e um terco ampliaria 1.5x. Nove planos (3x3) exigiriam
+  # `canvas_scale: 3`, ou seja uma imagem de 6453px que nenhum modelo entrega.
+  # Zero em `sub_shot_seconds` desliga e volta a um plano por faixa.
+  max_sub_shots: 4
+  sub_shot_seconds: 2.5
+  # O mesmo arquivo amplia o DOBRO num quadrante: sao metade dos pixels da
+  # fonte preenchendo a mesma tela. Uma imagem de 1344px amplia 1.6x no plano
+  # cheio e 3.2x no quadrante. Este aviso e o que responde se a imagem que
+  # saiu errada e o modelo ignorando o prompt ou resolucao insuficiente para o
+  # plano em que ela aparece — sao conserto diferente.
+  upscale_warn_factor: 1.5
 
   ken_burns:
     # scale_crop: escala a imagem para 2x a resolucao de saida, anima o
