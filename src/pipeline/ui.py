@@ -235,20 +235,19 @@ def create_app(config: Config) -> FastAPI:
 
         linhas = ""
         for estado in estados:
-            erro = estado.script.error or estado.storyboard.error
+            erro = next((g.error for _, g in estado.gates if g.error), "")
             aviso = f'<br><span class="erro">{escape(erro)}</span>' if erro else ""
             linhas += (
                 f"<tr><td><a href=\"/{escape(estado.slug)}/script\">"
                 f"{escape(estado.slug)}</a>{aviso}</td>"
-                f"<td>{badge(estado.script)}</td>"
-                f"<td>{badge(estado.storyboard)}</td>"
-                f"<td>{'sim' if estado.recorded else '-'}</td>"
+                + "".join(f"<td>{badge(g)}</td>" for _, g in estado.gates)
+                + f"<td>{'sim' if estado.recorded else '-'}</td>"
                 f'<td class="ausente">{escape(estado.stage)}</td></tr>'
             )
         return page(
             "youtube-auto",
             "<section><table><tr><th>video</th><th>roteiro</th>"
-            "<th>storyboard</th><th>gravado</th><th>estado</th></tr>"
+            "<th>storyboard</th><th>imagens</th><th>gravado</th><th>estado</th></tr>"
             f"{linhas}</table></section>"
             '<section><p class="ausente">"editado!" quer dizer que o arquivo '
             "mudou depois de aprovado: a aprovacao valia para outra versao e "

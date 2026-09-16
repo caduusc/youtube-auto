@@ -9,7 +9,7 @@ from conftest import span
 
 from pipeline.bank import AssetBank, cosine
 from pipeline.edl import resolve as resolve_edl
-from pipeline.resolver import AssetResolver, BudgetExceeded
+from pipeline.resolver import AssetResolver, BudgetExceeded, from_edl
 from pipeline.schemas import PlannedEDL
 
 # --------------------------------------------------------------------------
@@ -120,7 +120,7 @@ def test_banco_vazio_manda_tudo_para_geracao(bank, tmp_path, transcript):
     provider = FakeProvider()
     segments = broll(transcript, [("a desk with a notebook", ["desk", "notebook"]),
                                   ("an ocean at dawn", ["ocean", "dawn"])])
-    assets = make_resolver(bank, tmp_path, provider=provider).resolve(segments)
+    assets = make_resolver(bank, tmp_path, provider=provider).resolve(from_edl(segments))
 
     assert assets.by_origin == {"generated": 2}
     assert len(provider.calls) == 2
@@ -130,7 +130,7 @@ def test_banco_vazio_manda_tudo_para_geracao(bank, tmp_path, transcript):
 def test_style_suffix_entra_no_prompt(bank, tmp_path, transcript):
     provider = FakeProvider()
     segments = broll(transcript, [("a desk with a notebook", ["desk", "notebook"])])
-    make_resolver(bank, tmp_path, provider=provider).resolve(segments)
+    make_resolver(bank, tmp_path, provider=provider).resolve(from_edl(segments))
 
     assert provider.calls[0].startswith("a desk with a notebook,")
     assert "flat editorial illustration" in provider.calls[0]
@@ -149,7 +149,7 @@ def test_reusa_do_banco_em_vez_de_gerar(bank, tmp_path, transcript):
 
     provider = FakeProvider()
     segments = broll(transcript, [("a notebook on a desk", ["desk", "notebook"])])
-    assets = make_resolver(bank, tmp_path, provider=provider).resolve(segments)
+    assets = make_resolver(bank, tmp_path, provider=provider).resolve(from_edl(segments))
 
     assert assets.by_origin == {"bank": 1}
     assert provider.calls == []
@@ -165,7 +165,7 @@ def test_abaixo_do_limiar_nao_reusa(bank, tmp_path, transcript):
 
     provider = FakeProvider()
     segments = broll(transcript, [("a desk with a notebook", ["desk", "notebook"])])
-    assets = make_resolver(bank, tmp_path, provider=provider).resolve(segments)
+    assets = make_resolver(bank, tmp_path, provider=provider).resolve(from_edl(segments))
 
     assert assets.by_origin == {"generated": 1}
     assert len(provider.calls) == 1
@@ -182,7 +182,7 @@ def test_nao_reusa_a_mesma_imagem_duas_vezes_no_mesmo_video(bank, tmp_path, tran
     provider = FakeProvider()
     segments = broll(transcript, [("a notebook on a desk", ["desk", "notebook"]),
                                   ("a desk and a notebook", ["desk", "notebook"])])
-    assets = make_resolver(bank, tmp_path, provider=provider).resolve(segments)
+    assets = make_resolver(bank, tmp_path, provider=provider).resolve(from_edl(segments))
 
     assert assets.by_origin == {"bank": 1, "generated": 1}
     assert len(provider.calls) == 1
@@ -190,7 +190,7 @@ def test_nao_reusa_a_mesma_imagem_duas_vezes_no_mesmo_video(bank, tmp_path, tran
 
 def test_imagem_gerada_volta_para_o_banco(bank, tmp_path, transcript):
     segments = broll(transcript, [("a desk with a notebook", ["desk", "notebook"])])
-    make_resolver(bank, tmp_path).resolve(segments)
+    make_resolver(bank, tmp_path).resolve(from_edl(segments))
 
     assert bank.stats()["assets"] == 1
     assert bank.stats()["by_origin"] == {"generated": 1}
@@ -203,7 +203,7 @@ def test_arquivo_sumido_nao_e_reusado(bank, tmp_path, transcript):
              origin="generated", cost_usd=0.025)
     provider = FakeProvider()
     segments = broll(transcript, [("a notebook on a desk", ["desk", "notebook"])])
-    assets = make_resolver(bank, tmp_path, provider=provider).resolve(segments)
+    assets = make_resolver(bank, tmp_path, provider=provider).resolve(from_edl(segments))
 
     assert assets.by_origin == {"generated": 1}
 
@@ -217,7 +217,7 @@ def test_cena_generica_vai_para_stock(bank, tmp_path, transcript):
     stock = FakeStock(["city", "office"])
     provider = FakeProvider()
     segments = broll(transcript, [("a city skyline at dusk", ["city", "skyline"])])
-    assets = make_resolver(bank, tmp_path, provider=provider, stock=stock).resolve(segments)
+    assets = make_resolver(bank, tmp_path, provider=provider, stock=stock).resolve(from_edl(segments))
 
     assert assets.by_origin == {"stock": 1}
     assert provider.calls == []
@@ -229,7 +229,7 @@ def test_cena_especifica_nao_vai_para_stock(bank, tmp_path, transcript):
     stock = FakeStock(["city", "office"])
     provider = FakeProvider()
     segments = broll(transcript, [("a server rack seen from below", ["server", "rack"])])
-    assets = make_resolver(bank, tmp_path, provider=provider, stock=stock).resolve(segments)
+    assets = make_resolver(bank, tmp_path, provider=provider, stock=stock).resolve(from_edl(segments))
 
     assert assets.by_origin == {"generated": 1}
     assert stock.searches == []
@@ -239,7 +239,7 @@ def test_stock_sem_resultado_cai_para_geracao(bank, tmp_path, transcript):
     stock = FakeStock(["city"], hit=False)
     provider = FakeProvider()
     segments = broll(transcript, [("a city skyline at dusk", ["city", "skyline"])])
-    assets = make_resolver(bank, tmp_path, provider=provider, stock=stock).resolve(segments)
+    assets = make_resolver(bank, tmp_path, provider=provider, stock=stock).resolve(from_edl(segments))
 
     assert assets.by_origin == {"generated": 1}
     assert len(provider.calls) == 1
@@ -253,7 +253,7 @@ def test_banco_tem_precedencia_sobre_stock(bank, tmp_path, transcript):
 
     stock = FakeStock(["city"])
     segments = broll(transcript, [("a city skyline at night", ["city", "skyline"])])
-    assets = make_resolver(bank, tmp_path, stock=stock).resolve(segments)
+    assets = make_resolver(bank, tmp_path, stock=stock).resolve(from_edl(segments))
 
     assert assets.by_origin == {"bank": 1}
     assert stock.searches == []
@@ -271,7 +271,7 @@ def test_para_antes_de_gastar_se_o_pior_caso_estoura(bank, tmp_path, transcript)
                                   ("an ocean at dawn", ["ocean", "dawn"]),
                                   ("a kitchen counter", ["kitchen", "counter"])])
     with pytest.raises(BudgetExceeded) as excinfo:
-        make_resolver(bank, tmp_path, provider=provider, budget=1.00).resolve(segments)
+        make_resolver(bank, tmp_path, provider=provider, budget=1.00).resolve(from_edl(segments))
 
     assert provider.calls == []
     assert excinfo.value.estimate.worst_case_usd == pytest.approx(1.50)
@@ -287,7 +287,7 @@ def test_acumulador_interrompe_quando_o_preco_real_e_maior(bank, tmp_path, trans
     segments = broll(transcript, [("a desk with a notebook", ["desk", "notebook"]),
                                   ("an ocean at dawn", ["ocean", "dawn"]),
                                   ("a kitchen counter", ["kitchen", "counter"])])
-    assets = make_resolver(bank, tmp_path, provider=provider, budget=0.16).resolve(segments)
+    assets = make_resolver(bank, tmp_path, provider=provider, budget=0.16).resolve(from_edl(segments))
 
     assert assets.by_origin == {"generated": 2, "solid": 1}
     assert len(provider.calls) == 2
@@ -304,7 +304,7 @@ def test_sem_provider_configurado_vira_cor_solida(bank, tmp_path, transcript):
         budget_usd=1.50, cost_usd_per_image=0.025,
         images_dir=tmp_path / "assets" / "images",
     )
-    assets = resolver.resolve(segments)
+    assets = resolver.resolve(from_edl(segments))
 
     assert assets.by_origin == {"solid": 1}
     assert assets.total_cost_usd == 0.0
@@ -321,7 +321,7 @@ def test_estimativa_de_custo_funciona_sem_provider(bank, tmp_path, transcript):
         budget_usd=1.50, cost_usd_per_image=0.025,
         images_dir=tmp_path / "assets" / "images",
     )
-    assets = resolver.resolve(segments, dry_run=True)
+    assets = resolver.resolve(from_edl(segments), dry_run=True)
 
     assert assets.estimate.n_to_generate == 2
     assert assets.estimate.worst_case_usd == pytest.approx(0.05)
@@ -338,7 +338,7 @@ def test_reuso_do_banco_nao_consome_orcamento(bank, tmp_path, transcript):
     segments = broll(transcript, [("a notebook on a desk", ["desk", "notebook"]),
                                   ("the ocean at dawn", ["ocean", "dawn"])])
     # pior caso = 2 * 0.50 = 1.00, dentro do teto; nada e gerado de fato
-    assets = make_resolver(bank, tmp_path, provider=provider, budget=1.00).resolve(segments)
+    assets = make_resolver(bank, tmp_path, provider=provider, budget=1.00).resolve(from_edl(segments))
 
     assert assets.by_origin == {"bank": 2}
     assert assets.total_cost_usd == 0.0
@@ -355,7 +355,7 @@ def test_dry_run_nao_gasta_nem_baixa(bank, tmp_path, transcript):
     segments = broll(transcript, [("a desk with a notebook", ["desk", "notebook"]),
                                   ("a city skyline at dusk", ["city", "skyline"])])
     assets = make_resolver(bank, tmp_path, provider=provider, stock=stock).resolve(
-        segments, dry_run=True)
+        from_edl(segments), dry_run=True)
 
     assert assets.dry_run is True
     assert provider.calls == [] and stock.searches == []
@@ -376,7 +376,7 @@ def test_dry_run_estima_a_divisao_entre_rotas(bank, tmp_path, transcript):
     segments = broll(transcript, [("a notebook on a desk", ["desk", "notebook"]),
                                   ("a city skyline at dusk", ["city", "skyline"]),
                                   ("a server rack seen from below", ["server", "rack"])])
-    assets = make_resolver(bank, tmp_path, stock=stock).resolve(segments, dry_run=True)
+    assets = make_resolver(bank, tmp_path, stock=stock).resolve(from_edl(segments), dry_run=True)
 
     assert assets.estimate.n_broll == 3
     assert assets.estimate.n_from_bank == 1

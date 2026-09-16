@@ -23,9 +23,10 @@ from __future__ import annotations
 
 from .bank import cosine
 from .config import AlignConfig
+from .edl import stats
 from .embed import Embedder
 from .log import log
-from .schemas import BeatPlacement, Script, Storyboard, Transcript
+from .schemas import EDL, Assets, BeatPlacement, EDLSegment, Storyboard, Transcript
 from .storyboard import collapse, normalize
 
 
@@ -133,10 +134,25 @@ def place(
     return colocados
 
 
+def first_segment_after(transcript: Transcript, seconds: float) -> int:
+    """O primeiro segmento que COMECA depois de `seconds`.
+
+    Devolve `len(segments)` quando nenhum comeca depois — o que faz o piso do
+    intro engolir o video inteiro, que e o certo para um video mais curto que
+    a propria regra de intro.
+    """
+    for i, segment in enumerate(transcript.segments):
+        if segment.start >= seconds:
+            return i
+    return len(transcript.segments)
+
+
 def spans_for(
     placements: list[BeatPlacement],
     storyboard: Storyboard,
     transcript: Transcript,
+    *,
+    intro_seconds: float = 0.0,
 ) -> list[tuple[int, int, int]]:
     """(beat_id, primeiro_segmento, ultimo_segmento) de cada faixa de b-roll.
 
@@ -145,9 +161,17 @@ def spans_for(
     tempo e o que preserva "nunca cortar no meio da frase": a fronteira e
     sempre fronteira de segmento, entao cortar no meio e inexprimivel — nao
     validado depois, inexprimivel.
+
+    `intro_seconds` e um PISO e nao um filtro: um ancora que caiu dentro do
+    intro empurra a imagem para depois dele, em vez de a imagem ser descartada.
+    A regra do intro existe para o espectador ver a sua cara primeiro, e ela
+    continua valendo; mas descartar apagaria uma imagem que voce aprovou e
+    pagou, e por um motivo que nao e dela — ela entrar cinco segundos antes do
+    que a regra permite. Aparecer um pouco depois preserva as duas coisas.
     """
     por_id = {b.beat_id: b for b in storyboard.beats}
     n = len(transcript.segments)
+    piso = first_segment_after(transcript, intro_seconds)
     faixas: list[tuple[int, int, int]] = []
     ocupado_ate = -1
 
@@ -155,7 +179,7 @@ def spans_for(
         if colocado.segment < 0:
             continue
         beat = por_id[colocado.beat_id]
-        inicio = max(colocado.segment, ocupado_ate + 1)
+        inicio = max(colocado.segment, ocupado_ate + 1, piso)
         if inicio >= n:
             continue
 
@@ -169,3 +193,114 @@ def spans_for(
         ocupado_ate = fim
 
     return faixas
+
+
+# --------------------------------------------------------------------------
+# a EDL
+# --------------------------------------------------------------------------
+
+
+def edl_from_spans(
+    spans: list[tuple[int, int, int]],
+    storyboard: Storyboard,
+    transcript: Transcript,
+    *,
+    input_hash: str,
+) -> EDL:
+    """A EDL completa: b-roll nas faixas, a-roll em TODO o resto.
+
+    O a-roll nao e escolhido aqui, ele e o complemento — e por isso que a
+    cobertura exata da timeline (sem buraco, sem sobreposicao, do segmento 0
+    ao ultimo) e propriedade da construcao em vez de regra validada depois. O
+    caminho do `planner` precisava validar isso porque lá as duas coisas vinham
+    de um modelo; aqui so as faixas de b-roll vem de fora.
+
+    O `concept` e as `concept_tags` do beat viajam para a faixa porque e o que
+    o dry-run mostra e o que uma re-resolucao usaria — a EDL tem que descrever
+    a imagem que vai em cima dela, nao so onde ela entra.
+    """
+    por_id = {b.beat_id: b for b in storyboard.beats}
+    n = len(transcript.segments)
+    segments: list[EDLSegment] = []
+    cursor = 0
+
+    def faixa(kind: str, first: int, last: int, **extra) -> None:
+        segments.append(EDLSegment(
+            kind=kind, first_segment=first, last_segment=last,
+            start=transcript.segments[first].start,
+            end=transcript.segments[last].end,
+            **extra,
+        ))
+
+    for beat_id, first, last in spans:
+        if first > cursor:
+            faixa("aroll", cursor, first - 1)
+        beat = por_id[beat_id]
+        faixa("broll", first, last,
+              concept=beat.concept, concept_tags=list(beat.concept_tags))
+        cursor = last + 1
+
+    if cursor < n:
+        faixa("aroll", cursor, n - 1)
+
+    return EDL(
+        input_hash=input_hash,
+        model="align",
+        attempts=1,
+        duration=transcript.duration,
+        segments=segments,
+        stats=stats(segments, transcript.duration),
+    )
+
+
+def broll_positions(segments: list[EDLSegment]) -> list[int]:
+    """As posicoes das faixas de b-roll na lista de segmentos.
+
+    E por POSICAO que o render junta imagem e faixa (`AssetItem.segment_index`),
+    e nao por `first_segment`.
+    """
+    return [i for i, s in enumerate(segments) if s.kind == "broll"]
+
+
+def aligned_assets(
+    assets: Assets,
+    spans: list[tuple[int, int, int]],
+    segments: list[EDLSegment],
+    *,
+    input_hash: str,
+) -> Assets:
+    """Os mesmos assets, com `segment_index` preenchido a partir do `beat_id`.
+
+    E aqui que a traducao beat -> segmento mora, e so aqui: o `align` e o unico
+    ponto do pipeline que conhece o beat e a EDL ao mesmo tempo.
+
+    Sair num arquivo novo em vez de reescrever `assets.json` nao e cerimonia.
+    `assets.json` foi APROVADO, e reescrever o arquivo mudaria o que a
+    aprovacao cobre — o proprio portao que este estagio acabou de exigir
+    passaria a apontar para outra versao. Mesmo padrao do
+    `transcript.trimmed.json`.
+
+    O emparelhamento e por ORDEM e nao por busca: `edl_from_spans` emite
+    exatamente uma faixa de b-roll por span, na ordem das spans, entao a
+    n-esima faixa de b-roll e a n-esima span. Ha teste para isso, porque a
+    propriedade e do construtor e nao desta funcao.
+
+    Beat orfao (que nao virou span) mantem `segment_index = -1` e ganha nota:
+    a imagem existe, foi paga, e nao vai aparecer. Silenciar isso seria
+    esconder dinheiro gasto.
+    """
+    posicao = {
+        beat_id: indice
+        for (beat_id, _, _), indice in zip(spans, broll_positions(segments))
+    }
+
+    items = []
+    for item in assets.items:
+        indice = posicao.get(item.beat_id, -1)
+        nota = item.note
+        if indice < 0:
+            nota = "beat nao alinhou na fala: esta imagem nao entra no video"
+        items.append(item.model_copy(update={"segment_index": indice, "note": nota}))
+
+    items.sort(key=lambda i: i.segment_index)
+    return assets.model_copy(update={"input_hash": input_hash, "items": items})

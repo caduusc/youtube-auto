@@ -4,7 +4,10 @@
     pipeline <estagio> <slug>          # roda um estagio isolado
     pipeline script "a sua ideia"      # roteiro primeiro
     pipeline storyboard <slug>
-    pipeline approve script|storyboard <slug>
+    pipeline images <slug> [--dry-run]
+    pipeline approve script|storyboard|images <slug>
+    pipeline shoot <slug> <arquivo.mp4>    # depois de gravar, roda sozinho
+    pipeline align <slug>
     pipeline status
     pipeline ui                        # a mesma revisao, no navegador
     pipeline bank stats
@@ -22,7 +25,7 @@ from . import approval, progress, stages
 from .config import Config, load_config
 from .log import log
 from .resolver import BudgetExceeded
-from .schemas import EDL, Assets, Manifest, Storyboard, Transcript, TrimPlan
+from .schemas import EDL, Assets, Manifest, Placements, Storyboard, Transcript, TrimPlan
 from .script import read as read_script, spoken_seconds, words
 from .stages.assets import open_bank
 from .storyboard import render_text as render_storyboard
@@ -297,6 +300,77 @@ def cmd_storyboard(args, config: Config) -> int:
     return 0
 
 
+def cmd_images(args, config: Config) -> int:
+    """Estagio 3: o storyboard aprovado vira imagens. Gasta dinheiro."""
+    work = config.work_dir / args.slug
+    script = read_script(work / "script.md")
+    board = load_storyboard(work, args.slug)
+
+    try:
+        assets = stages.images.run(script, board, config, dry_run=args.dry_run)
+    except BudgetExceeded:
+        return 2
+
+    print(stages.images.render_text(assets, board, config))
+    if args.dry_run:
+        print("  Nada foi baixado, gerado, nem cobrado.\n")
+        return 0
+    print("  Revise as imagens e aprove com:")
+    print(f"    pipeline approve images {args.slug}\n")
+    return 0
+
+
+def cmd_align(args, config: Config) -> int:
+    """Estagio 6: onde cada imagem cai na fala gravada."""
+    work = config.work_dir / args.slug
+    script = read_script(work / "script.md")
+    board = load_storyboard(work, args.slug)
+    edl, _ = stages.align.run(
+        script, board, load(args.slug, config, "trimmed"),
+        read_json(work / "assets.json", Assets), config,
+    )
+    print(stages.align.render_text(read_json(work / "align.json", Placements), board))
+    print(f"  {edl.stats.n_broll} faixas de b-roll, "
+          f"{edl.stats.broll_ratio:.0%} de cobertura\n")
+    return 0
+
+
+def cmd_shoot(args, config: Config) -> int:
+    """Depois de gravar: do arquivo ao video montado, sem parar.
+
+    O slug vem antes do arquivo de proposito. E ele que liga a gravacao ao
+    roteiro, ao storyboard e as imagens que voce ja aprovou — sem ele o
+    `ingest` abriria um `work/` novo derivado do nome do arquivo, e o `align`
+    nao acharia nada. Ver `stages.ingest.run`.
+    """
+    work = work_dir(args.slug, config)
+    script = read_script(work / "script.md")
+    board = load_storyboard(work, args.slug)
+    assets = read_json(work / "assets.json", Assets)
+
+    manifest = stages.ingest.run(Path(args.input), config, slug=args.slug)
+    transcript = stages.transcribe.run(manifest, config)
+    trim_plan, trimmed = stages.trim.run(manifest, transcript, config)
+    print(stages.trim.render_text(trim_plan))
+
+    edl, aligned = stages.align.run(script, board, trimmed, assets, config)
+    print(stages.align.render_text(read_json(work / "align.json", Placements), board))
+
+    output = stages.render.run(manifest, trimmed, edl, aligned, config, trim_plan)
+    stages.report.run(manifest, edl, aligned, output, config)
+    return 0
+
+
+def load_storyboard(work: Path, slug: str) -> Storyboard:
+    caminho = work / "storyboard.json"
+    if not caminho.exists():
+        raise SystemExit(
+            f"storyboard.json nao existe em {work} — "
+            f"rode antes: pipeline storyboard {slug}"
+        )
+    return read_json(caminho, Storyboard)
+
+
 def cmd_approve(args, config: Config) -> int:
     """Aprova um portao, gravando O QUE foi aprovado.
 
@@ -326,7 +400,23 @@ def cmd_approve(args, config: Config) -> int:
             )
         board = read_json(caminho, Storyboard)
         approval.grant(work, "storyboard", board.input_hash)
-        print(f"\n  Storyboard aprovado ({board.n_images} imagens).\n")
+        print(f"\n  Storyboard aprovado ({board.n_images} imagens). "
+              f"Proximo:  pipeline images {args.slug}\n")
+        return 0
+
+    if args.gate == "images":
+        work = config.work_dir / args.slug
+        caminho = work / "assets.json"
+        if not caminho.exists():
+            raise SystemExit(
+                f"assets.json nao existe em {work} — "
+                f"rode antes: pipeline images {args.slug}"
+            )
+        assets = read_json(caminho, Assets)
+        approval.grant(work, "images", assets.input_hash)
+        print(f"\n  {len(assets.items)} imagens aprovadas "
+              f"(USD {assets.total_cost_usd:.4f}). Agora grave, e depois:"
+              f"\n    pipeline shoot {args.slug} <arquivo.mp4>\n")
         return 0
 
     raise SystemExit(f"portao desconhecido: {args.gate}")
@@ -345,14 +435,16 @@ def cmd_status(args, config: Config) -> int:
     largura = max(len("video"), *(len(e.slug) for e in estados))
 
     print()
-    print(f"  {'video':<{largura}} {'roteiro':<12} {'storyboard':<12} {'gravacao'}")
-    print("  " + "-" * (largura + 38))
+    print(f"  {'video':<{largura}} {'roteiro':<11} {'storyboard':<11} "
+          f"{'imagens':<11} {'gravacao'}")
+    print("  " + "-" * (largura + 46))
     for estado in estados:
-        print(f"  {estado.slug:<{largura}} {estado.script.state:<12} "
-              f"{estado.storyboard.state:<12} {'sim' if estado.recorded else '-'}")
-        for erro in (estado.script.error, estado.storyboard.error):
-            if erro:
-                print(f"    ! {erro}")
+        colunas = "".join(f"{g.state:<11} " for _, g in estado.gates)
+        print(f"  {estado.slug:<{largura}} {colunas}"
+              f"{'sim' if estado.recorded else '-'}")
+        for _, gate in estado.gates:
+            if gate.error:
+                print(f"    ! {gate.error}")
     print()
     print("  'editado!' quer dizer que o arquivo mudou depois de aprovado —")
     print("  a aprovacao foi revogada e precisa ser dada de novo.")
@@ -403,9 +495,23 @@ def build_parser() -> argparse.ArgumentParser:
                                     help="do roteiro aprovado para os beats visuais")
     storyboard_cmd.add_argument("slug")
 
+    images_cmd = sub.add_parser("images",
+                                help="do storyboard aprovado para as imagens")
+    images_cmd.add_argument("slug")
+    images_cmd.add_argument("--dry-run", action="store_true",
+                            help="mostra a divisao banco/stock/geracao e o custo, sem gastar")
+
     approve_cmd = sub.add_parser("approve", help="aprova um portao")
-    approve_cmd.add_argument("gate", choices=["script", "storyboard"])
+    approve_cmd.add_argument("gate", choices=stages.GATES)
     approve_cmd.add_argument("slug")
+
+    shoot_cmd = sub.add_parser(
+        "shoot", help="depois de gravar: do arquivo ao video montado")
+    shoot_cmd.add_argument("slug")
+    shoot_cmd.add_argument("input", help="o arquivo de video que voce gravou")
+
+    align_cmd = sub.add_parser("align", help="onde cada imagem cai na fala gravada")
+    align_cmd.add_argument("slug")
 
     sub.add_parser("status", help="onde cada video esta")
 
@@ -442,6 +548,12 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_script(args, config)
         if args.command == "storyboard":
             return cmd_storyboard(args, config)
+        if args.command == "images":
+            return cmd_images(args, config)
+        if args.command == "shoot":
+            return cmd_shoot(args, config)
+        if args.command == "align":
+            return cmd_align(args, config)
         if args.command == "approve":
             return cmd_approve(args, config)
         if args.command == "status":
@@ -449,6 +561,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "ui":
             return cmd_ui(args, config)
         return cmd_stage(args.command, args.slug, config)
+    except approval.NotApproved as exc:
+        # Portao fechado nao e defeito do programa: e a resposta certa, e a
+        # mensagem ja diz o comando exato. Deixar propagar imprimia um
+        # traceback de Python em cima de um recado escrito para uma pessoa.
+        raise SystemExit(f"\n  {exc}\n") from None
     except KeyboardInterrupt:
         log("interrupted", detail="os artefatos ja escritos continuam validos; rode de novo para retomar")
         return 130

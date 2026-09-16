@@ -286,23 +286,53 @@ O estado dos portões é lido em um lugar só (`progress.py`), usado pela CLI e
 pela UI. Duplicar seria a divergência que não falha: a UI dizendo "aprovado" e
 o `status` dizendo "editado!".
 
-### O que ainda falta para o caminho rodar de ponta a ponta
+### Os dois estágios que fechavam o caminho
 
-Dois estágios, não a UI:
+Construídos. A pergunta aberta — quem traduz `beat_id` para índice de segmento
+— foi decidida pelo `assets.aligned.json`:
 
-1. **estágio 3, `assets` por beat.** Hoje o resolver junta imagem e vídeo por
-   índice de segmento da EDL. Antes de gravar não existe EDL, então a chave
-   precisa ser `beat_id`.
-2. **estágio 6, `align` como estágio.** O módulo `align.py` existe e está
-   testado, mas nada escreve `edl.json` a partir de storyboard + transcript.
-   `stages.SCRIPT_FIRST` reflete isso: ele não lista `assets` nem `align`.
+    assets.json           indexado por beat_id, APROVADO por você
+    assets.aligned.json   o mesmo, com segment_index preenchido
 
-Os dois juntos levantam uma pergunta de desenho que não está resolvida neste
-plano: quem traduz `beat_id` para índice de segmento, e onde isso fica
-gravado. A EDL nasce no `align`, que é o único ponto que conhece as duas
-coisas — o que sugere um `assets.aligned.json` (como o
-`transcript.trimmed.json` já faz) para não reescrever um artefato que já foi
-aprovado. **Isso precisa ser decidido antes de ser escrito.**
+O `align` é o único ponto do pipeline que conhece o beat e a EDL ao mesmo
+tempo, então a tradução mora lá. Sair num arquivo novo não é cerimônia:
+reescrever `assets.json` mudaria o que a aprovação cobre, e o próprio portão
+que o estágio acabou de exigir passaria a apontar para outra versão. Mesmo
+padrão do `transcript.trimmed.json`. Consequência boa: `render` e `report` não
+mudaram uma linha.
+
+O resolver **nunca precisou de uma EDL** — usava três campos dela (`kind`,
+`concept`, `concept_tags`) e carregava o índice adiante só como identidade.
+Explicitar isso num `ImageRequest` é o que faz um resolver só servir aos dois
+caminhos, em vez de existirem duas resoluções divergindo em silêncio no reuso,
+no orçamento e no fallback de stock.
+
+Três coisas que só apareceram construindo:
+
+- **`Transcript.digest()` era cego a tempo e texto.** Ele era
+  `input_hash + idioma + contagem de segmentos`. O `trim` devolve um transcript
+  remapeado — mesmo áudio, mesma contagem, tempos diferentes — então mexer em
+  `trim.pause_max_seconds` deixava o `edl.json` antigo em pé e cada imagem caía
+  no instante da timeline velha, errada por todo o corte acumulado antes dela.
+  Bug do caminho antigo também, corrigido junto.
+- **O portão do storyboard sozinho não fecha o buraco.** Aprovar o roteiro,
+  gerar o storyboard, aprovar o storyboard e *depois* editar o roteiro deixa os
+  dois portões de pé. O que pega é comparar o `input_hash` do storyboard com a
+  chave que ele teria hoje, que carrega o digest do roteiro.
+- **`broll_min_seconds` deixa de governar este caminho.** A duração de cada
+  b-roll passa a ser `sub_shots * sub_shot_seconds`, aprovado beat por beat.
+  O `align` não valida contra o mínimo/máximo editorial de propósito: seria
+  re-litigar decisão tomada, e ensinaria a ignorar os avisos. O que a gravação
+  *pode* mudar — cobertura e taxa de troca, que dependem de quão rápido você
+  falou — sai como aviso de verdade.
+
+### O que ainda falta
+
+A tela de revisão das imagens na UI (`GET /{slug}/assets`, o contact sheet, e
+`POST /{slug}/assets/{beat}/regenerate`). Agora ela é construível: o estágio 3
+existe e `assets.json` é indexado por beat. Por enquanto a revisão é
+`pipeline images <slug>` no terminal, que imprime conceito e arquivo lado a
+lado, e `pipeline approve images <slug>`.
 
 ## Mudanças de config
 

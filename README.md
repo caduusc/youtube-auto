@@ -239,26 +239,52 @@ agente escreve o roteiro, você aprova, um segundo agente decide as imagens,
 você aprova, e só então a câmera liga. Desenho em
 [`docs/plans/2026-09-16-roteiro-primeiro.md`](docs/plans/2026-09-16-roteiro-primeiro.md).
 
+    script ─> storyboard ─> images ─┐  APROVA cada um, antes de gravar
+                                     │
+          ─────── você grava seguindo o roteiro ───────
+                                     │
+    ingest ─> transcribe ─> trim ─> align ─> render ─> report
+
 ```bash
 uv run pipeline script "por que método de produtividade falha sem objetivo"
 uv run pipeline approve script <slug>
 uv run pipeline storyboard <slug>
 uv run pipeline approve storyboard <slug>
-uv run pipeline status              # onde cada vídeo está
+uv run pipeline images <slug> --dry-run   # a divisão banco/stock/geração e o custo
+uv run pipeline images <slug>
+uv run pipeline approve images <slug>
+#   ... grave o vídeo seguindo o roteiro ...
+uv run pipeline shoot <slug> gravacao.mp4  # do arquivo ao vídeo montado
+uv run pipeline status                     # onde cada vídeo está
 ```
 
-Os dois portões existem para uma **pessoa** olhar antes de qualquer dinheiro
-ser gasto, então eles têm interface:
+As imagens vêm **antes** da gravação porque estão amarradas a beats do roteiro,
+não a segundos. Você revisa com calma; depois de gravar não há mais nada a
+aprovar. O `shoot` precisa do slug porque ele nasceu da **ideia**, não do nome
+do arquivo — é ele que liga a gravação ao roteiro, ao storyboard e às imagens
+que você já aprovou.
+
+O que faz isso sobreviver a improviso: o storyboard **nunca escreve segundo
+absoluto**. Ele escreve um trecho literal do roteiro (o âncora), e o `align`
+descobre depois em que ponto da fala real aquele trecho foi dito. Improvisar
+oito segundos não desloca nada.
+
+Três portões, e cada um existe para uma **pessoa** olhar antes de qualquer
+dinheiro ser gasto — então eles têm interface:
 
 ```bash
 uv run pipeline ui                  # http://127.0.0.1:8000
 ```
 
-Três telas: a lista dos vídeos com o estado de cada portão, o roteiro
+Três telas: a lista dos vídeos com o estado dos três portões, o roteiro
 renderizado com um campo para editar e aprovar, e o storyboard em um cartão
 por beat — com o trecho da fala ao lado e o âncora destacado dentro dele, que
 é o que responde a única pergunta dessa revisão: *essa imagem entra no ponto
 certo do que eu vou dizer?*
+
+A revisão das imagens é a tela que falta: por enquanto ela é
+`pipeline images <slug>`, que imprime conceito e arquivo lado a lado, e
+`pipeline approve images <slug>`.
 
 A UI **não é dona de estado nenhum**. Toda página lê o disco na hora, todo
 POST escreve no disco, e a aprovação é um arquivo em `work/<slug>/`. Fechar o

@@ -21,14 +21,26 @@ def slug_for(source: Path, content_hash: str) -> str:
     return f"{slugify(source.stem)}-{content_hash[:8]}"
 
 
-def run(source: Path, config: Config) -> Manifest:
+def run(source: Path, config: Config, *, slug: str | None = None) -> Manifest:
+    """Valida o arquivo e extrai o audio, em `work/<slug>/`.
+
+    `slug` explicito e o que liga a gravacao a um roteiro que ja existe. No
+    caminho gravacao-primeiro o slug nasce do arquivo; no roteiro-primeiro ele
+    nasceu da IDEIA, meses antes de existir arquivo, e o roteiro, o storyboard
+    e as imagens aprovadas estao naquele diretorio. Sem isto a gravacao abriria
+    um `work/` novo e o `align` nao acharia nada.
+
+    A protecao que o hash no slug dava nao se perde: o manifest continua
+    carregando `input_hash`, entao reexportar o arquivo com uma correcao
+    invalida o manifest e o audio e extraido de novo.
+    """
     source = Path(source).resolve()
     if not source.exists():
         raise FileNotFoundError(f"arquivo de entrada nao encontrado: {source}")
 
     with stage("ingest", file=source.name):
         content_hash = file_hash(source)
-        slug = slug_for(source, content_hash)
+        slug = slug or slug_for(source, content_hash)
         work = config.work_dir / slug
         manifest_path = work / "manifest.json"
 

@@ -118,3 +118,47 @@ def test_ligar_o_briefing_invalida_a_edl(transcript, config):
     other = config.model_copy(deep=True)
     other.anthropic.two_phase = not config.anthropic.two_phase
     assert plan_key(transcript, config) != plan_key(transcript, other)
+
+
+# --------------------------------------------------------------------------
+# a identidade do transcript
+# --------------------------------------------------------------------------
+
+
+def deslocado(transcript, por: float):
+    """O transcript com todos os tempos empurrados. E o que o `trim` faz:
+    mesmo audio, mesma contagem de segmentos, tempos diferentes."""
+    outro = transcript.model_copy(deep=True)
+    for segmento in outro.segments:
+        segmento.start += por
+        segmento.end += por
+    return outro
+
+
+def test_remapear_os_tempos_invalida_a_edl(transcript, config):
+    """O bug que isto fecha era silencioso e crescia ao longo do video.
+
+    O `trim` devolve um transcript remapeado, e a identidade antiga
+    (`input_hash` + idioma + contagem de segmentos) nao mudava com ele. Mexer
+    em `trim.pause_max_seconds` deixava o `edl.json` antigo em pe, e cada
+    imagem caia no instante da timeline velha — errada por todo o corte
+    acumulado antes dela.
+    """
+    assert transcript.digest() != deslocado(transcript, 0.8).digest()
+
+
+def test_corrigir_o_texto_de_um_segmento_invalida_a_edl(transcript, config):
+    """O `plan` LE o texto para decidir onde a imagem entra, e o `align`
+    procura o ancora dentro dele. Consertar um erro de transcricao a mao tem
+    que refazer essa decisao."""
+    outro = transcript.model_copy(deep=True)
+    outro.segments[3].text = "esta frase foi corrigida a mao depois"
+
+    assert transcript.digest() != outro.digest()
+    assert plan_key(transcript, config) != plan_key(outro, config)
+
+
+def test_o_mesmo_transcript_da_o_mesmo_digest(transcript):
+    """Estavel entre execucoes: o digest e chave de cache, nao carimbo de
+    tempo."""
+    assert transcript.digest() == transcript.model_copy(deep=True).digest()

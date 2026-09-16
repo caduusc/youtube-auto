@@ -388,3 +388,42 @@ def test_json_do_approval_e_legivel_a_mao(client, work):
     client.post("/v1/script/approve")
     dados = json.loads(approval.path_for(work, "script").read_text(encoding="utf-8"))
     assert set(dados) == {"digest", "approved_at"}
+
+
+# --------------------------------------------------------------------------
+# o portao das imagens e so do caminho roteiro-primeiro
+# --------------------------------------------------------------------------
+
+
+def test_assets_do_caminho_antigo_nao_abre_portao(client, work):
+    """`assets.json` existe nos dois caminhos, mas so o roteiro-primeiro tem o
+    que aprovar antes. Sem distinguir, todo video antigo apareceria esperando
+    para sempre uma aprovacao que nao existe naquele caminho."""
+    from pipeline.schemas import AssetEstimate, AssetItem, Assets
+
+    write_json(work / "assets.json", Assets(
+        input_hash="h", items=[AssetItem(segment_index=3, origin="generated",
+                                         path="a.png", cost_usd=0.003)],
+        estimate=AssetEstimate(n_broll=1, n_from_bank=0, n_from_stock=0,
+                               n_to_generate=1, worst_case_usd=0.003,
+                               estimated_usd=0.003, budget_usd=1.5,
+                               within_budget=True),
+        total_cost_usd=0.003, by_origin={"generated": 1}))
+
+    assert progress.images_gate(work).state == progress.ABSENT
+
+
+def test_assets_por_beat_abre_o_portao(client, work):
+    from pipeline.schemas import AssetEstimate, AssetItem, Assets
+
+    write_json(work / "assets.json", Assets(
+        input_hash="h", items=[AssetItem(beat_id=2, origin="generated",
+                                         path="a.png", cost_usd=0.025)],
+        estimate=AssetEstimate(n_broll=1, n_from_bank=0, n_from_stock=0,
+                               n_to_generate=1, worst_case_usd=0.025,
+                               estimated_usd=0.025, budget_usd=3.0,
+                               within_budget=True),
+        total_cost_usd=0.025, by_origin={"generated": 1}))
+
+    assert progress.images_gate(work).state == progress.WRITTEN
+    assert progress.WRITTEN in client.get("/").text

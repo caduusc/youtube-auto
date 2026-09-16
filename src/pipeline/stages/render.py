@@ -49,23 +49,33 @@ def sub_shots_enabled(cfg: RenderConfig) -> bool:
     return cfg.sub_shot_seconds > 0 and cfg.max_sub_shots > 1
 
 
-def _warn_if_small(source: Path, relative: str, cfg: RenderConfig) -> None:
+def source_size(source: Path) -> tuple[int, int]:
+    """(largura, altura) da imagem, ou (0, 0) se ela nao da para ler.
+
+    (0, 0) e um resultado real e nao um caso hipotetico: download
+    interrompido no meio deixa um arquivo que existe, tem bytes, e nao e
+    imagem — e o `ffprobe` devolve `width: 0` em vez de falhar.
+    """
+    stream = next(
+        (s for s in probe(source)["streams"] if s["codec_type"] == "video"), None
+    )
+    if stream is None:
+        return 0, 0
+    return int(stream.get("width") or 0), int(stream.get("height") or 0)
+
+
+def _warn_if_small(relative: str, width: int, height: int, cfg: RenderConfig) -> None:
     """Avisa quando a fonte nao tem pixel para o plano em que ela vai entrar.
 
     Mede o pior plano que este config pode pedir, nao o melhor: com sub-plano
     ligado o quadrante e o que manda, porque e ele que vai preencher a tela
     com metade da imagem.
     """
-    stream = next(
-        (s for s in probe(source)["streams"] if s["codec_type"] == "video"), None
-    )
-    if stream is None:
-        return
     region: Region = "top_left" if sub_shots_enabled(cfg) else "full"
-    factor = upscale_factor(int(stream["width"]), region, cfg)
+    factor = upscale_factor(width, region, cfg)
     if factor > cfg.upscale_warn_factor:
         log("render.warn",
-            detail=f"{relative} tem {stream['width']}x{stream['height']} e amplia "
+            detail=f"{relative} tem {width}x{height} e amplia "
                    f"{factor:.1f}x no plano '{region}' (teto "
                    f"{cfg.upscale_warn_factor:g}x): gere a imagem maior, ou desligue "
                    f"o sub-plano com render.sub_shot_seconds: 0")
@@ -86,12 +96,27 @@ def prepare_images(assets: Assets, config: Config, work: Path) -> dict[int, Path
     for item in assets.items:
         if item.path is None:
             continue
+        # Beat que nao alinhou na fala sai de `assets.aligned.json` com
+        # `segment_index = -1`. A imagem existe e foi paga, mas nao entra no
+        # video: prepara-la seria uma reescala de 4304px jogada fora.
+        if item.segment_index < 0:
+            continue
         source = config.path(item.path)
         if not source.exists():
             log("render.warn", detail=f"imagem ausente, virou cor solida: {item.path}")
             continue
 
-        _warn_if_small(source, item.path, config.render)
+        # Arquivo ilegivel vale como arquivo ausente: vira cor solida, com o
+        # nome no aviso para voce apagar e resolver de novo. Deixar seguir
+        # matava o render inteiro no `ffmpeg` do prep, depois de as imagens ja
+        # terem sido pagas — e por uma imagem so.
+        origem_w, origem_h = source_size(source)
+        if origem_w <= 0:
+            log("render.warn",
+                detail=f"imagem ilegivel, virou cor solida: {item.path} "
+                       f"(apague o arquivo e rode o estagio de imagens de novo)")
+            continue
+        _warn_if_small(item.path, origem_w, origem_h, config.render)
 
         target = prep_dir / f"{text_hash(item.path, width, height)[:16]}.png"
         if not target.exists():
