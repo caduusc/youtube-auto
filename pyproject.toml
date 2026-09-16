@@ -10,6 +10,13 @@ dependencies = [
     "pydantic>=2.7",
     "pyyaml>=6.0",
     "requests>=2.31",
+    # A UI de revisao e aprovacao (`pipeline ui`). Dependencia normal e nao
+    # extra opcional de proposito: sao dois portoes que existem para uma
+    # PESSOA olhar antes de gastar dinheiro, entao a interface deles faz parte
+    # da ferramenta. Tudo puro Python, nada compilado.
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+    "python-multipart>=0.0.9",
 ]
 
 [project.scripts]

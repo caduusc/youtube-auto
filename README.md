@@ -232,6 +232,44 @@ Para forçar a refazer mesmo sem mudar o config, apague o artefato:
 rm work/aula-a1b2c3d4/edl.json && uv run pipeline plan aula-a1b2c3d4
 ```
 
+## Roteiro primeiro, e a UI de aprovação
+
+O caminho acima parte de um vídeo já gravado. O outro parte da **ideia**: um
+agente escreve o roteiro, você aprova, um segundo agente decide as imagens,
+você aprova, e só então a câmera liga. Desenho em
+[`docs/plans/2026-09-16-roteiro-primeiro.md`](docs/plans/2026-09-16-roteiro-primeiro.md).
+
+```bash
+uv run pipeline script "por que método de produtividade falha sem objetivo"
+uv run pipeline approve script <slug>
+uv run pipeline storyboard <slug>
+uv run pipeline approve storyboard <slug>
+uv run pipeline status              # onde cada vídeo está
+```
+
+Os dois portões existem para uma **pessoa** olhar antes de qualquer dinheiro
+ser gasto, então eles têm interface:
+
+```bash
+uv run pipeline ui                  # http://127.0.0.1:8000
+```
+
+Três telas: a lista dos vídeos com o estado de cada portão, o roteiro
+renderizado com um campo para editar e aprovar, e o storyboard em um cartão
+por beat — com o trecho da fala ao lado e o âncora destacado dentro dele, que
+é o que responde a única pergunta dessa revisão: *essa imagem entra no ponto
+certo do que eu vou dizer?*
+
+A UI **não é dona de estado nenhum**. Toda página lê o disco na hora, todo
+POST escreve no disco, e a aprovação é um arquivo em `work/<slug>/`. Fechar o
+navegador no meio não perde nada, e a CLI continua fazendo tudo sozinha sem
+UI nenhuma. Nenhum GET gasta dinheiro: a tela do storyboard não chama o
+agente, porque navegador recarrega por conta própria.
+
+O default é `127.0.0.1` e não `0.0.0.0`: essa interface aprova gasto e escreve
+arquivo, sem autenticação. Ela é uma ferramenta de uma pessoa na própria
+máquina.
+
 ## Como as decisões foram tomadas
 
 ### O áudio nunca é filtrado
