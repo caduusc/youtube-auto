@@ -325,3 +325,128 @@ class Report(BaseModel):
     brl_per_usd: float
     cost_usd_per_final_minute: float
     generated_at: str
+
+
+# --------------------------------------------------------------------------
+# Roteiro primeiro: script.md -> storyboard.json -> edl.json
+#
+# Inverte a ordem do pipeline antigo. Antes a intencao visual era INFERIDA de
+# fala improvisada; aqui ela e escrita e aprovada antes de a camera ligar.
+# Ver docs/plans/2026-09-16-roteiro-primeiro.md.
+# --------------------------------------------------------------------------
+
+
+class ScriptBeat(BaseModel):
+    """Um trecho do roteiro. O `id` vem do cabecalho, nao da posicao."""
+
+    id: int
+    title: str = ""
+    text: str
+
+
+class Script(BaseModel):
+    slug: str
+    subject: str
+    argument: str
+    viewer_takeaway: str
+    duration_target_seconds: float = 0.0
+    beats: list[ScriptBeat]
+
+    def beat(self, beat_id: int) -> ScriptBeat | None:
+        return next((b for b in self.beats if b.id == beat_id), None)
+
+    def digest(self) -> str:
+        """Identidade do roteiro, para a chave de cache do storyboard.
+
+        Inclui o TEXTO dos beats, nao so os ids: editar o texto de um beat
+        muda o que a imagem dele deveria mostrar, entao tem que invalidar.
+        """
+        from .util import text_hash
+
+        return text_hash(
+            self.subject, self.argument,
+            *(f"{b.id}:{b.text}" for b in self.beats),
+        )
+
+
+class PlannedBeat(BaseModel):
+    """Um beat visual, como o modelo devolve. Sem tempo absoluto nenhum.
+
+    `script_anchor` e a peca que faz o desenho sobreviver a improviso: e um
+    trecho do PROPRIO roteiro, e o estagio de alinhamento descobre onde ele
+    caiu na fala real. Pedir segundo absoluto aqui seria pedir ao modelo para
+    prever a sua entrega, e qualquer desvio deslocaria tudo adiante.
+    """
+
+    beat_id: int = Field(description="o id do beat do roteiro que esta imagem ilustra")
+    script_anchor: str = Field(
+        description="um trecho curto e literal do texto daquele beat, copiado "
+                    "exatamente como esta escrito, que marca onde a imagem entra"
+    )
+    concept: str = Field(
+        description="descricao visual concreta em ingles do que a imagem mostra. "
+                    "Sem texto na imagem, sem rosto em foco, sem metafora abstrata"
+    )
+    concept_tags: list[str] = Field(
+        description="2 a 4 palavras-chave em ingles que resumem a cena"
+    )
+    sub_shots: int = Field(
+        description="quantos planos tirar desta mesma imagem, de 1 a 4, "
+                    "recortando regioes diferentes dela"
+    )
+    rationale: str = Field(
+        description="por que esta imagem, neste ponto, em uma frase — e o que "
+                    "voce le na revisao para decidir se aprova"
+    )
+
+
+class PlannedStoryboard(BaseModel):
+    beats: list[PlannedBeat]
+
+
+class StoryboardBeat(PlannedBeat):
+    """O beat validado, com o que o pipeline derivou dele."""
+
+    anchor_offset: int = Field(
+        default=-1,
+        description="posicao do ancora no texto do beat; -1 quando nao foi "
+                    "encontrado literalmente e caiu na busca por similaridade",
+    )
+    seconds_per_shot: float = 0.0
+
+    @property
+    def screen_seconds(self) -> float:
+        return self.sub_shots * self.seconds_per_shot
+
+
+class Storyboard(BaseModel):
+    input_hash: str          # digest do roteiro + regras + estilo
+    beats: list[StoryboardBeat]
+
+    @property
+    def total_screen_seconds(self) -> float:
+        return sum(b.screen_seconds for b in self.beats)
+
+    @property
+    def n_images(self) -> int:
+        """Uma imagem por beat — os sub-planos saem todos da mesma."""
+        return len(self.beats)
+
+
+class SubShot(BaseModel):
+    """Um plano tirado de uma regiao da imagem, ja na timeline.
+
+    A regiao e escolhida pelo pipeline e nao pelo modelo: o limite e
+    geometrico. Ver `render.sub_shot_regions` e o plano — com `canvas_scale: 2`
+    o quadrante e exatamente nativo em 1080p, e um terco ampliaria 1.5x.
+    """
+
+    index: int
+    start: float
+    end: float
+    region: Literal["full", "top_left", "top_right", "bottom_left", "bottom_right"]
+    direction: str
+
+    @property
+    def duration(self) -> float:
+        return self.end - self.start
