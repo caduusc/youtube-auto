@@ -33,6 +33,19 @@ class EditorialConfig(BaseModel):
     concept_tags_max: int = 4
 
 
+class ScriptConfig(BaseModel):
+    """Estagio 1: da ideia para o roteiro.
+
+    `words_per_minute` e o que converte roteiro em duracao ANTES de existir
+    gravacao — e com isso o storyboard sabe quanto tempo de tela ele pode
+    pedir. 150 e uma taxa de fala explicativa em portugues; meca a sua num
+    video antigo (palavras do transcript / duracao em minutos) e ajuste, porque
+    errar aqui faz o storyboard pedir cobertura para um video que nao existe.
+    """
+
+    words_per_minute: float = 150.0
+
+
 class TranscribeConfig(BaseModel):
     model: str = "small"
     device: str = "cpu"
@@ -149,6 +162,15 @@ class RenderConfig(BaseModel):
     max_fade_ratio: float = 0.25
     solid_fallback_color: str = "0x1B2A33"
     max_filtergraph_chars: int = 3000
+    # --- sub-planos -------------------------------------------------------
+    # Varios planos tirados da MESMA imagem, recortando regioes diferentes.
+    # O teto de 4 e geometrico e nao de gosto: com `canvas_scale: 2` o
+    # `prep_size` e `largura * 2 * zoom_max`, entao metade dele e exatamente
+    # `largura * zoom_max` — o quadrante cabe nativo e um terco ampliaria 1.5x.
+    # Nove sub-planos exigiriam `canvas_scale: 3`, ou seja uma imagem de
+    # 6453px que nenhum provider entrega.
+    max_sub_shots: int = 4
+    sub_shot_seconds: float = 2.5
     ken_burns: KenBurnsConfig = Field(default_factory=KenBurnsConfig)
 
 
@@ -177,6 +199,7 @@ class Config(BaseModel):
     styles: dict[str, str] = Field(default_factory=dict)
     anthropic: AnthropicConfig
     editorial: EditorialConfig
+    script: ScriptConfig = Field(default_factory=ScriptConfig)
     transcribe: TranscribeConfig = Field(default_factory=TranscribeConfig)
     trim: TrimConfig = Field(default_factory=TrimConfig)
     bank: BankConfig
