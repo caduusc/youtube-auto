@@ -46,6 +46,19 @@ class ScriptConfig(BaseModel):
     words_per_minute: float = 150.0
 
 
+class AlignConfig(BaseModel):
+    """Estagio de alinhamento: onde cada beat visual caiu na fala real.
+
+    `min_similarity` so entra em jogo quando a busca LITERAL falha — ou seja,
+    quando voce parafraseou aquele trecho ao gravar. Abaixo dele o beat fica
+    orfao e sai no relatorio, em vez de a imagem ser encaixada num lugar
+    plausivel e errado. 0.55 e frouxo de proposito: um ancora de seis palavras
+    contra um segmento de vinte tem cosseno naturalmente baixo.
+    """
+
+    min_similarity: float = 0.55
+
+
 class TranscribeConfig(BaseModel):
     model: str = "small"
     device: str = "cpu"
@@ -200,6 +213,7 @@ class Config(BaseModel):
     anthropic: AnthropicConfig
     editorial: EditorialConfig
     script: ScriptConfig = Field(default_factory=ScriptConfig)
+    align: AlignConfig = Field(default_factory=AlignConfig)
     transcribe: TranscribeConfig = Field(default_factory=TranscribeConfig)
     trim: TrimConfig = Field(default_factory=TrimConfig)
     bank: BankConfig

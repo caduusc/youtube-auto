@@ -49,6 +49,10 @@ class TranscriptSegment(BaseModel):
     text: str
     words: list[Word] = Field(default_factory=list)
 
+    @property
+    def duration(self) -> float:
+        return self.end - self.start
+
 
 class Transcript(BaseModel):
     input_hash: str          # hash do audio
@@ -466,3 +470,19 @@ class PlannedScript(BaseModel):
     beats: list[ScriptBeat] = Field(
         description="os trechos do roteiro, com id comecando em 1 e sem buraco"
     )
+
+
+class BeatPlacement(BaseModel):
+    """Onde um beat visual caiu na fala real.
+
+    `method` fica gravado porque muda como voce le o resultado: `literal`
+    quer dizer que voce disse aquele trecho como estava escrito; `semantic`
+    que voce parafraseou e o embedding achou o lugar; `unaligned` que a imagem
+    ficou orfa — nao existe um lugar bom para ela, e forcar um seria pior.
+    """
+
+    beat_id: int
+    anchor_offset: int
+    segment: int             # indice no transcript; -1 quando orfao
+    method: Literal["literal", "semantic", "unaligned"]
+    similarity: float
