@@ -24,7 +24,7 @@ from pathlib import Path
 
 from . import approval
 from .config import Config
-from .schemas import Storyboard
+from .schemas import Assets, Storyboard
 from .script import ScriptFormatError, read as read_script
 from .util import read_json
 
@@ -55,19 +55,22 @@ class VideoState:
     slug: str
     script: Gate
     storyboard: Gate
+    images: Gate
     recorded: bool
 
     @property
+    def gates(self) -> list[tuple[str, Gate]]:
+        return [("script", self.script), ("storyboard", self.storyboard),
+                ("images", self.images)]
+
+    @property
     def stage(self) -> str:
-        """Em que ponto do caminho este video esta, em uma palavra."""
-        if self.script.state == ABSENT:
-            return "sem roteiro"
-        if self.script.state != APPROVED:
-            return "roteiro"
-        if self.storyboard.state == ABSENT:
-            return "aguardando storyboard"
-        if self.storyboard.state != APPROVED:
-            return "storyboard"
+        """Em que ponto do caminho este video esta, em poucas palavras."""
+        for nome, gate in self.gates:
+            if gate.state == ABSENT:
+                return "sem roteiro" if nome == "script" else f"aguardando {nome}"
+            if gate.state != APPROVED:
+                return nome
         return "gravado" if self.recorded else "pronto para gravar"
 
 
@@ -104,6 +107,33 @@ def storyboard_gate(work: Path) -> Gate:
     return _compare(approval.read(work, "storyboard"), board.input_hash)
 
 
+def images_gate(work: Path) -> Gate:
+    """O estado das imagens.
+
+    Mesmo desenho do storyboard, e pela mesma razao: o `input_hash` das
+    imagens inclui o do storyboard mais o estilo e o provider, entao trocar o
+    `style_suffix` no config invalida as imagens — e sem comparar o digest a
+    tela diria "aprovado" para imagens que vao ser regeradas (e pagas de novo).
+
+    `assets.json` existe nos DOIS caminhos, mas o portao e so do
+    roteiro-primeiro: no gravacao-primeiro as imagens saem depois da EDL, sem
+    nada para aprovar antes. O que distingue e a chave — item com `beat_id`
+    veio de storyboard, item com `segment_index` veio de EDL. Sem esta
+    distincao todo video antigo apareceria como "escrito" para sempre,
+    esperando uma aprovacao que nao existe naquele caminho.
+    """
+    caminho = work / "assets.json"
+    if not caminho.exists():
+        return Gate(ABSENT)
+    try:
+        assets = read_json(caminho, Assets)
+    except Exception as exc:                       # noqa: BLE001 - ver docstring
+        return Gate(ABSENT, error=f"assets.json nao pode ser lido: {exc}")
+    if not any(item.beat_id >= 0 for item in assets.items):
+        return Gate(ABSENT)
+    return _compare(approval.read(work, "images"), assets.input_hash)
+
+
 def _compare(granted: approval.Approval | None, digest: str) -> Gate:
     if granted is None:
         return Gate(WRITTEN)
@@ -115,6 +145,7 @@ def state_of(work: Path) -> VideoState:
         slug=work.name,
         script=script_gate(work),
         storyboard=storyboard_gate(work),
+        images=images_gate(work),
         recorded=(work / "manifest.json").exists(),
     )
 

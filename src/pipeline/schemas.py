@@ -62,10 +62,28 @@ class Transcript(BaseModel):
     segments: list[TranscriptSegment]
 
     def digest(self) -> str:
-        """Identidade do transcript, para o estagio 3 cachear em cima dele."""
+        """Identidade do transcript: o que ele diz E quando.
+
+        Inclui o tempo e o texto de cada segmento, e nao so `input_hash` com a
+        contagem, por dois caminhos que davam cache errado em silencio.
+
+        O `trim` devolve um transcript REMAPEADO: mesmo audio, mesma contagem
+        de segmentos, tempos diferentes. Com a identidade so no audio, mexer
+        em `trim.pause_max_seconds` deixava o `edl.json` antigo em pe, e as
+        imagens caiam nos instantes da timeline velha — erradas por todo o
+        corte acumulado antes delas, um erro que cresce ao longo do video e
+        que ninguem reconheceria como problema de cache.
+
+        E corrigir a mao o texto de um segmento (erro de transcricao) nao
+        invalidava nada, apesar de o `plan` LER o texto para decidir onde a
+        imagem entra, e de o `align` procurar o ancora dentro dele.
+        """
         from .util import text_hash
 
-        return text_hash(self.input_hash, self.language, len(self.segments))
+        return text_hash(
+            self.input_hash, self.language, len(self.segments),
+            *(f"{s.start:.3f}:{s.end:.3f}:{s.text}" for s in self.segments),
+        )
 
 
 # --------------------------------------------------------------------------
@@ -278,7 +296,18 @@ Origin = Literal["bank", "stock", "generated", "solid"]
 
 
 class AssetItem(BaseModel):
-    segment_index: int       # indice em EDL.segments
+    """Uma imagem conseguida para um pedido.
+
+    A identidade vem em um dos dois campos, e qual deles esta preenchido diz
+    de qual caminho o artefato veio. `segment_index` (indice em EDL.segments)
+    no gravacao-primeiro, onde a EDL existe antes das imagens. `beat_id` no
+    roteiro-primeiro, onde as imagens vem ANTES de a camera ligar e portanto
+    antes de existir EDL para indexar — la o `align` traduz beat para segmento
+    depois da gravacao, e grava o resultado em `assets.aligned.json`.
+    """
+
+    segment_index: int = -1
+    beat_id: int = -1
     origin: Origin
     path: str | None = None  # None apenas para origin="solid"
     asset_id: int | None = None
@@ -300,7 +329,7 @@ class AssetEstimate(BaseModel):
 
 
 class Assets(BaseModel):
-    input_hash: str          # digest da EDL
+    input_hash: str          # digest da EDL, ou do storyboard
     dry_run: bool = False
     items: list[AssetItem]
     estimate: AssetEstimate
@@ -467,6 +496,40 @@ class SubShot(BaseModel):
     @property
     def duration(self) -> float:
         return self.end - self.start
+
+
+class BeatSpan(BaseModel):
+    """A faixa de tela que um beat ganhou, ja em segundos.
+
+    Existe separada do `BeatPlacement` porque as duas coisas divergem, e a
+    diferenca e exatamente o que confunde na revisao: o `placement` diz onde o
+    ANCORA foi achado, e a faixa diz onde a imagem ENTRA. O piso do intro e o
+    cursor de nao-sobreposicao empurram a segunda para frente sem mexer na
+    primeira — um relatorio que mostrasse so o placement diria "segmento 0"
+    para uma imagem que aparece aos 10s.
+    """
+
+    beat_id: int
+    first_segment: int
+    last_segment: int
+    start: float
+    end: float
+
+
+class Placements(BaseModel):
+    """`align.json`: onde cada beat caiu na fala, e como.
+
+    Nao alimenta estagio nenhum — e o relatorio. Um beat que casou por
+    similaridade fraca, ou que nao casou, e a unica coisa daquela etapa que
+    pede o olho de uma pessoa, e sem gravar em disco a informacao morreria no
+    log da execucao.
+    """
+
+    input_hash: str
+    placements: list[BeatPlacement]
+    spans: list[BeatSpan] = Field(default_factory=list)
+    n_orphans: int = 0
+    warnings: list[str] = Field(default_factory=list)
 
 
 class PlannedScript(BaseModel):

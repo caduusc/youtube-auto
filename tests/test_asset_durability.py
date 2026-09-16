@@ -13,6 +13,7 @@ from test_bank_reuse import FakeEmbedder, FakeProvider, FakeStock, make_resolver
 
 from pipeline.bank import AssetBank
 from pipeline.edl import resolve as resolve_edl
+from pipeline.resolver import from_edl
 from pipeline.schemas import PlannedEDL
 
 
@@ -113,7 +114,7 @@ def test_imagem_gerada_nao_e_perdida_se_indexar_falhar(broken_bank, tmp_path, tr
     """O dinheiro ja saiu. O asset tem que sobreviver."""
     provider = FakeProvider(cost=0.025)
     segments = one_broll(transcript, "a desk with a notebook", ["desk", "notebook"])
-    assets = make_resolver(broken_bank, tmp_path, provider=provider).resolve(segments)
+    assets = make_resolver(broken_bank, tmp_path, provider=provider).resolve(from_edl(segments))
 
     item = assets.items[0]
     assert item.origin == "generated"
@@ -128,7 +129,7 @@ def test_imagem_gerada_nao_e_perdida_se_indexar_falhar(broken_bank, tmp_path, tr
 def test_imagem_de_stock_nao_e_perdida_se_indexar_falhar(broken_bank, tmp_path, transcript):
     stock = FakeStock(["desk"])
     segments = one_broll(transcript, "a desk with a notebook", ["desk", "notebook"])
-    assets = make_resolver(broken_bank, tmp_path, stock=stock).resolve(segments)
+    assets = make_resolver(broken_bank, tmp_path, stock=stock).resolve(from_edl(segments))
 
     item = assets.items[0]
     assert item.origin == "stock"
@@ -140,7 +141,7 @@ def test_asset_sem_embedding_nunca_e_reusado(broken_bank, tmp_path, transcript):
     """Embedding vazio nao pode virar um falso positivo de similaridade."""
     provider = FakeProvider()
     segments = one_broll(transcript, "a desk with a notebook", ["desk", "notebook"])
-    make_resolver(broken_bank, tmp_path, provider=provider).resolve(segments)
+    make_resolver(broken_bank, tmp_path, provider=provider).resolve(from_edl(segments))
 
     # agora com um embedder sadio, o asset degradado nao deve casar com nada
     broken_bank.embedder = FakeEmbedder()
@@ -152,7 +153,7 @@ def test_backfill_manual_recupera_o_asset(broken_bank, tmp_path, transcript):
     valer, o que importa porque o asset ja foi pago."""
     provider = FakeProvider()
     segments = one_broll(transcript, "a desk with a notebook", ["desk", "notebook"])
-    make_resolver(broken_bank, tmp_path, provider=provider).resolve(segments)
+    make_resolver(broken_bank, tmp_path, provider=provider).resolve(from_edl(segments))
 
     broken_bank.embedder = FakeEmbedder()
     row = broken_bank.conn.execute("SELECT id, concept FROM assets").fetchone()
@@ -176,7 +177,7 @@ def test_dry_run_nao_precisa_do_embedder_com_banco_vazio(broken_bank, tmp_path, 
     """O --dry-run existe para responder na hora; com banco vazio ele nao tem
     o que comparar e nao pode exigir 400MB de modelo."""
     segments = one_broll(transcript, "a desk with a notebook", ["desk", "notebook"])
-    assets = make_resolver(broken_bank, tmp_path).resolve(segments, dry_run=True)
+    assets = make_resolver(broken_bank, tmp_path).resolve(from_edl(segments), dry_run=True)
     assert assets.dry_run is True
     assert assets.estimate.n_to_generate == 1
 

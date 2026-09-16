@@ -12,7 +12,7 @@ import requests
 from conftest import span
 from test_bank_reuse import FakeStock, bank  # noqa: F401
 
-from pipeline.resolver import AssetResolver
+from pipeline.resolver import AssetResolver, from_edl
 
 from pipeline.edl import resolve as resolve_edl
 from pipeline.providers import ReplicateProvider, build_provider
@@ -81,7 +81,7 @@ def test_stock_resolve_e_o_resto_vira_cor_solida(bank, tmp_path, transcript):
     """Com geracao desligada: o generico sai do stock, o especifico vira cor
     solida, e o video sai."""
     stock = FakeStock(["city"])
-    assets = resolver_without_provider(bank, tmp_path, stock).resolve(two_brolls(transcript))
+    assets = resolver_without_provider(bank, tmp_path, stock).resolve(from_edl(two_brolls(transcript)))
 
     assert assets.by_origin == {"stock": 1, "solid": 1}
     assert assets.total_cost_usd == 0.0
@@ -92,7 +92,7 @@ def test_stock_resolve_e_o_resto_vira_cor_solida(bank, tmp_path, transcript):
 def test_estimativa_sem_provider_nao_promete_geracao(bank, tmp_path, transcript):
     stock = FakeStock(["city"])
     assets = resolver_without_provider(bank, tmp_path, stock).resolve(
-        two_brolls(transcript), dry_run=True)
+        from_edl(two_brolls(transcript)), dry_run=True)
 
     assert assets.estimate.worst_case_usd == 0.0
     assert assets.estimate.within_budget is True

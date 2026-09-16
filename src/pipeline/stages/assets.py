@@ -7,7 +7,7 @@ from ..config import Config
 from ..embed import SentenceTransformerEmbedder, resolve_model
 from ..log import log, stage
 from ..providers import PexelsStock, build_provider
-from ..resolver import AssetResolver, BudgetExceeded
+from ..resolver import AssetResolver, BudgetExceeded, from_edl
 from ..schemas import EDL, Assets, Manifest
 from ..util import read_json_if_fresh, text_hash, write_json
 
@@ -63,22 +63,31 @@ def build_resolver(config: Config, bank: AssetBank, *, dry_run: bool) -> AssetRe
     )
 
 
-def cache_key(edl: EDL, config: Config) -> str:
-    """Identidade dos assets: a EDL MAIS tudo que decide qual imagem sai dela.
+def provider_key(config: Config) -> tuple[object, ...]:
+    """Tudo que decide QUAL imagem sai de um conceito.
 
     `style_suffix` esta aqui porque o README manda calibra-lo — e sem ele na
     chave, mexer no campo mais importante do config nao regera nada.
-    `similarity_threshold` e `generic_tags` mudam a rota de cada segmento
+    `similarity_threshold` e `generic_tags` mudam a rota de cada pedido
     (banco / stock / geracao), e o modelo do provider muda a imagem.
+
+    E compartilhado pelos dois caminhos de proposito. Sao as mesmas decisoes,
+    e um knob novo aqui tem que invalidar os dois: duas listas separadas
+    divergiriam em silencio, e o caminho esquecido seguiria reusando imagem
+    calculada com outro estilo.
     """
-    return text_hash(
-        edl.digest(),
+    return (
         config.style_suffix,
         config.bank.similarity_threshold,
         ",".join(sorted(config.stock.generic_tags)),
         config.image_provider.active,
         config.image_provider.replicate.model,
     )
+
+
+def cache_key(edl: EDL, config: Config) -> str:
+    """Identidade dos assets: a EDL mais o que decide a imagem."""
+    return text_hash(edl.digest(), *provider_key(config))
 
 
 def run(manifest: Manifest, edl: EDL, config: Config, *, dry_run: bool = False) -> Assets:
@@ -100,7 +109,7 @@ def run(manifest: Manifest, edl: EDL, config: Config, *, dry_run: bool = False) 
                 bank.warmup()
             resolver = build_resolver(config, bank, dry_run=dry_run)
             try:
-                assets = resolver.resolve(edl.segments, dry_run=dry_run)
+                assets = resolver.resolve(from_edl(edl.segments), dry_run=dry_run)
             except BudgetExceeded as exc:
                 print_estimate(exc.estimate, config)
                 raise

@@ -585,3 +585,23 @@ def test_sub_planos_mostram_regioes_diferentes_da_mesma_imagem(smoke_config, med
     # separacao bem acima dos 14 pontos que o caminho sem recorte produz
     valores = sorted(medido.values())
     assert min(b - a for a, b in zip(valores, valores[1:])) > 20, perfil
+
+
+def test_imagem_ilegivel_vira_cor_solida_em_vez_de_derrubar(smoke_config, media):
+    """Download interrompido deixa um arquivo que existe, tem bytes, e nao e
+    imagem. O `ffprobe` devolve `width: 0` em vez de falhar, e o render
+    morria com ZeroDivisionError no aviso de resolucao — depois de as imagens
+    ja terem sido pagas, por causa de uma so.
+
+    Achado rodando o caminho inteiro pela CLI, nao por leitura do diff.
+    """
+    manifest, transcript, edl, assets = make_artifacts(smoke_config, media, n_broll=1)
+    quebrada = smoke_config.root / "quebrada.png"
+    quebrada.write_bytes(b"\x89PNG\r\n\x1a\n isto nao e uma imagem")
+    for item in assets.items:
+        item.path = "quebrada.png"
+
+    output = render.run(manifest, transcript, edl, assets, smoke_config)
+
+    assert float(ffprobe(output, "format=duration")) == pytest.approx(DURATION, abs=0.05)
+    assert audio_md5(output) == audio_md5(media["source"])
