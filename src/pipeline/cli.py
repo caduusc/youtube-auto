@@ -2,6 +2,11 @@
 
     pipeline run <arquivo.mp4> [--config config.yaml] [--dry-run] [--from <estagio>]
     pipeline <estagio> <slug>          # roda um estagio isolado
+    pipeline script "a sua ideia"      # roteiro primeiro
+    pipeline storyboard <slug>
+    pipeline approve script|storyboard <slug>
+    pipeline status
+    pipeline ui                        # a mesma revisao, no navegador
     pipeline bank stats
     pipeline bank prune --unused-days 90
 """
@@ -13,12 +18,12 @@ import json
 import sys
 from pathlib import Path
 
-from . import approval, stages
+from . import approval, progress, stages
 from .config import Config, load_config
 from .log import log
 from .resolver import BudgetExceeded
-from .schemas import EDL, Assets, Manifest, Transcript, TrimPlan
-from .script import ScriptFormatError, read as read_script, spoken_seconds, words
+from .schemas import EDL, Assets, Manifest, Storyboard, Transcript, TrimPlan
+from .script import read as read_script, spoken_seconds, words
 from .stages.assets import open_bank
 from .storyboard import render_text as render_storyboard
 from .util import read_json
@@ -307,53 +312,64 @@ def cmd_approve(args, config: Config) -> int:
         return 0
 
     if args.gate == "storyboard":
-        script = read_script(work / "script.md")
-        board = stages.storyboard.run(script, config=config)
+        # Le o artefato em disco em vez de chamar `stages.storyboard.run`.
+        # Aprovar tem que aprovar O QUE VOCE LEU, e passar pelo estagio podia
+        # gastar uma chamada de Opus se o config tivesse mudado no meio —
+        # aprovar nao e hora de gastar. Aprovar um hash desatualizado tambem
+        # nao deixa nada passar: o estagio seguinte recalcula a propria chave
+        # de cache, e storyboard recalculado volta a precisar de aprovacao.
+        caminho = work / "storyboard.json"
+        if not caminho.exists():
+            raise SystemExit(
+                f"storyboard.json nao existe em {work} — "
+                f"rode antes: pipeline storyboard {args.slug}"
+            )
+        board = read_json(caminho, Storyboard)
         approval.grant(work, "storyboard", board.input_hash)
-        print(f"\n  Storyboard aprovado ({board.n_images} imagens). "
-              f"Proximo:  pipeline assets {args.slug}\n")
+        print(f"\n  Storyboard aprovado ({board.n_images} imagens).\n")
         return 0
 
     raise SystemExit(f"portao desconhecido: {args.gate}")
 
 
 def cmd_status(args, config: Config) -> int:
-    """Onde cada video esta. E o que a UI vai mostrar na pagina inicial."""
-    raiz = config.work_dir
-    if not raiz.exists():
+    """Onde cada video esta. A mesma leitura que a pagina inicial da UI faz."""
+    estados = progress.all_states(config)
+    if not estados:
         print("\n  Nenhum video em work/ ainda.\n")
         return 0
 
+    # A largura sai do slug mais longo, nao de um numero fixo: o slug vem das
+    # seis primeiras palavras da ideia (`stages.script.slug_for`) e passa de 34
+    # com frequencia — e ai a coluna fixa colava uma na outra.
+    largura = max(len("video"), *(len(e.slug) for e in estados))
+
     print()
-    print(f"  {'video':<34} {'roteiro':<12} {'storyboard':<12} {'gravacao'}")
-    print("  " + "-" * 72)
-    for work in sorted(p for p in raiz.iterdir() if p.is_dir()):
-        try:
-            script = read_script(work / "script.md")
-            aprovado = approval.read(work, "script")
-            if aprovado is None:
-                roteiro = "escrito"
-            elif aprovado.matches(script.digest()):
-                roteiro = "aprovado"
-            else:
-                roteiro = "editado!"
-        except ScriptFormatError:
-            roteiro = "-"
-
-        board = work / "storyboard.json"
-        if not board.exists():
-            storyboard = "-"
-        elif approval.read(work, "storyboard") is None:
-            storyboard = "escrito"
-        else:
-            storyboard = "aprovado"
-
-        gravacao = "sim" if (work / "manifest.json").exists() else "-"
-        print(f"  {work.name:<34} {roteiro:<12} {storyboard:<12} {gravacao}")
+    print(f"  {'video':<{largura}} {'roteiro':<12} {'storyboard':<12} {'gravacao'}")
+    print("  " + "-" * (largura + 38))
+    for estado in estados:
+        print(f"  {estado.slug:<{largura}} {estado.script.state:<12} "
+              f"{estado.storyboard.state:<12} {'sim' if estado.recorded else '-'}")
+        for erro in (estado.script.error, estado.storyboard.error):
+            if erro:
+                print(f"    ! {erro}")
     print()
     print("  'editado!' quer dizer que o arquivo mudou depois de aprovado —")
     print("  a aprovacao foi revogada e precisa ser dada de novo.")
     print()
+    return 0
+
+
+def cmd_ui(args, config: Config) -> int:
+    """Sobe o servidor local de revisao.
+
+    127.0.0.1 e nao 0.0.0.0 de proposito: esta UI aprova gasto e escreve
+    arquivo, sem autenticacao nenhuma. Ela e uma ferramenta de uma pessoa na
+    propria maquina, e o default nao pode expor isso para a rede.
+    """
+    from .ui import serve
+
+    serve(config, host=args.host, port=args.port)
     return 0
 
 
@@ -393,6 +409,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("status", help="onde cada video esta")
 
+    ui_cmd = sub.add_parser("ui", help="sobe a UI local de revisao e aprovacao")
+    ui_cmd.add_argument("--host", default="127.0.0.1")
+    ui_cmd.add_argument("--port", type=int, default=8000)
+
     bank_cmd = sub.add_parser("bank", help="banco de assets")
     bank_sub = bank_cmd.add_subparsers(dest="bank_command", required=True)
     bank_sub.add_parser("stats", help="estatisticas do banco")
@@ -426,6 +446,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_approve(args, config)
         if args.command == "status":
             return cmd_status(args, config)
+        if args.command == "ui":
+            return cmd_ui(args, config)
         return cmd_stage(args.command, args.slug, config)
     except KeyboardInterrupt:
         log("interrupted", detail="os artefatos ja escritos continuam validos; rode de novo para retomar")

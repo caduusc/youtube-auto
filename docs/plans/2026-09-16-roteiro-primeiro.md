@@ -259,6 +259,51 @@ UI nenhuma.
 
 `pipeline ui` sobe o servidor. A CLI continua funcionando inteira sem ele.
 
+### O que foi construído, e o que ficou de fora
+
+As cinco primeiras rotas existem. As três de `assets` **não**, e não por
+economia de esforço: elas precisam de um estágio 3 que ainda não existe. O
+`assets` de hoje é indexado por segmento de EDL — que só nasce depois da
+gravação — e não por `beat_id`. Uma tela de contact sheet em cima disso
+mostraria as imagens do caminho antigo, não as do roteiro que você acabou de
+aprovar.
+
+Duas decisões que só apareceram construindo:
+
+- **Nenhum GET gasta dinheiro.** A tela do storyboard não chama o agente: se
+  `storyboard.json` não existe, ela diz qual comando rodar. Navegador
+  recarrega por conta própria, e prefetch de link também — uma página que
+  dispara uma chamada de Opus ao ser aberta é uma armadilha. Pela mesma razão,
+  `pipeline approve storyboard` passou a ler o artefato em vez de chamar
+  `stages.storyboard.run`.
+- **Salvar valida antes de gravar, e grava verbatim.** O texto do textarea é
+  parseado primeiro; se não passar, a página volta com o erro e com o texto
+  intacto no campo. Passando, é gravado byte a byte como veio — e não o
+  `render()` do que foi parseado, que normalizaria o frontmatter e descartaria
+  uma nota antes do primeiro beat.
+
+O estado dos portões é lido em um lugar só (`progress.py`), usado pela CLI e
+pela UI. Duplicar seria a divergência que não falha: a UI dizendo "aprovado" e
+o `status` dizendo "editado!".
+
+### O que ainda falta para o caminho rodar de ponta a ponta
+
+Dois estágios, não a UI:
+
+1. **estágio 3, `assets` por beat.** Hoje o resolver junta imagem e vídeo por
+   índice de segmento da EDL. Antes de gravar não existe EDL, então a chave
+   precisa ser `beat_id`.
+2. **estágio 6, `align` como estágio.** O módulo `align.py` existe e está
+   testado, mas nada escreve `edl.json` a partir de storyboard + transcript.
+   `stages.SCRIPT_FIRST` reflete isso: ele não lista `assets` nem `align`.
+
+Os dois juntos levantam uma pergunta de desenho que não está resolvida neste
+plano: quem traduz `beat_id` para índice de segmento, e onde isso fica
+gravado. A EDL nasce no `align`, que é o único ponto que conhece as duas
+coisas — o que sugere um `assets.aligned.json` (como o
+`transcript.trimmed.json` já faz) para não reescrever um artefato que já foi
+aprovado. **Isso precisa ser decidido antes de ser escrito.**
+
 ## Mudanças de config
 
 ```yaml
