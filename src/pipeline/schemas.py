@@ -450,3 +450,19 @@ class SubShot(BaseModel):
     @property
     def duration(self) -> float:
         return self.end - self.start
+
+
+class PlannedScript(BaseModel):
+    """O roteiro como o modelo devolve. Sem `slug`: quem nomeia e o pipeline.
+
+    O modelo devolve estrutura e nao Markdown pronto de proposito — assim a
+    validacao e de graca, e o `render` do `script.py` e o unico lugar que sabe
+    escrever o formato.
+    """
+
+    subject: str = Field(description="do que o video trata, em uma frase")
+    argument: str = Field(description="o argumento central que ele defende, em uma frase")
+    viewer_takeaway: str = Field(description="o que o espectador leva embora")
+    beats: list[ScriptBeat] = Field(
+        description="os trechos do roteiro, com id comecando em 1 e sem buraco"
+    )
