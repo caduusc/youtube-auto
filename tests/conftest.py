@@ -16,13 +16,52 @@ N_SEGMENTS = 200  # 200 * 4.5s = 900s = 15 min
 
 
 @pytest.fixture(scope="session")
-def config():
+def example_config():
+    """O config de exemplo como ele esta no repo, sem substituicao nenhuma."""
     return load_config(Path(__file__).resolve().parents[1] / "config.example.yaml")
 
 
 @pytest.fixture(scope="session")
-def rules(config):
-    return config.editorial
+def config(example_config, rules):
+    """O exemplo, com as regras editoriais trocadas pelas fixas do `rules`.
+
+    Ler o resto do exemplo e proposital: estilo, orcamento, banco e render sao
+    valores que a suite quer exercitar de verdade. Ja as regras editoriais sao
+    calibracao pura, e herda-las fazia mudar o ritmo visual do exemplo quebrar
+    testes que nao falam de ritmo. Ver o docstring de `rules`.
+    """
+    return example_config.model_copy(update={"editorial": rules})
+
+
+@pytest.fixture(scope="session")
+def rules():
+    """Regras editoriais FIXAS, nao as do config.example.
+
+    Herdar do exemplo acoplava a suite a calibracao: os spans destes testes
+    caem no grid de 4.5s do fixture `transcript`, entao baixar
+    `broll_max_seconds` no exemplo para dar mais dinamismo quebrava 22 testes
+    que nao falam de calibracao nenhuma, so de regra.
+
+    Sao os valores DO SPEC — b-roll de 8 a 25s, no maximo 3 trocas por
+    minuto, 20s de intro em a-roll, 50 a 70% de cobertura. E contra eles que a
+    suite foi escrita, e e o que os nomes dos testes dizem
+    (`test_rejeita_broll_nos_primeiros_20s`). O exemplo foi derivando disso
+    conforme a calibracao real, que e o trabalho dele; a suite ficar ancorada
+    no spec e o que faz calibrar nao quebrar teste de regra.
+
+    Que o exemplo em si tenha regras viaveis e assunto de
+    `test_feasibility.test_config_de_exemplo_e_viavel`.
+    """
+    from pipeline.config import EditorialConfig
+
+    return EditorialConfig(
+        broll_min_seconds=8.0,
+        broll_max_seconds=25.0,
+        max_switches_per_minute=3,
+        intro_aroll_seconds=20.0,
+        broll_ratio_min=0.50,
+        broll_ratio_max=0.70,
+    )
 
 
 @pytest.fixture

@@ -437,3 +437,65 @@ def test_dezenas_de_emendas_sobrevivem_ao_filtergraph(smoke_config, media):
     # a deriva que o alinhamento ao grid de frames existe para evitar, agora
     # com uma ordem de magnitude mais de cortes para acumular
     assert abs(dur_v - dur_a) < 0.05, f"dessincronia de {abs(dur_v - dur_a) * 1000:.0f}ms"
+
+
+def test_broll_curto_chega_a_opacidade_cheia(smoke_config, media):
+    """A propriedade que o fade proporcional existe para garantir.
+
+    Mede 0.6s, nao 0.8s, e conta FRAMES na tela em vez de amostrar um ponto.
+    As duas escolhas sao o que fazem o teste discriminar: em 0.8s (exatamente
+    2x o crossfade) o fade fixo ainda toca a opacidade cheia num instante, e
+    uma amostra no apice passa nos dois comportamentos. Em 0.6s o fade fixo
+    tem pico Y=155 e zero frame na tela.
+    """
+    from pipeline.filtergraph import Chunk, Overlay, build_graph, build_inputs
+
+    branca = smoke_config.work_dir / "branca.png"
+    branca.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-f", "lavfi",
+         "-i", "color=c=white:s=1920x1080:d=1", "-frames:v", "1", str(branca)],
+        check=True, capture_output=True,
+    )
+
+    inicio, duracao = 4.0, 0.6
+    overlay = Overlay(start=inicio, end=inicio + duracao,
+                      direction="zoom_in", image_path=branca)
+    chunk = Chunk(0, 0.0, DURATION, [overlay], keep=[(0.0, DURATION)],
+                  input_start=0.0, input_duration=DURATION)
+
+    saida = smoke_config.work_dir / "curto.mp4"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y",
+         *build_inputs(chunk, media["source"], smoke_config.render),
+         "-filter_complex", build_graph(chunk, smoke_config.render, None).replace(";\n", ";"),
+         "-map", "[vout]", "-an",
+         "-c:v", "libx264", "-crf", "28", "-preset", "ultrafast", str(saida)],
+        check=True, capture_output=True,
+    )
+
+    fps = smoke_config.render.fps
+    brilhos = []
+    for indice in range(int(duracao * fps)):
+        em = inicio + indice / fps + 1 / (2 * fps)
+        quadro = smoke_config.work_dir / "q.png"
+        subprocess.run(
+            ["ffmpeg", "-v", "error", "-y", "-ss", f"{em:.4f}", "-i", str(saida),
+             "-frames:v", "1", "-vf", "scale=1:1", str(quadro)],
+            check=True, capture_output=True,
+        )
+        medida = subprocess.run(
+            ["ffprobe", "-v", "error", "-f", "lavfi",
+             "-i", f"movie={quadro.as_posix()},signalstats",
+             "-show_entries", "frame_tags=lavfi.signalstats.YAVG",
+             "-of", "default=nw=1:nk=1"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip().splitlines()[0]
+        brilhos.append(float(medida))
+
+    cheios = [y for y in brilhos if y > 200]
+    assert max(brilhos) > 220, f"pico Y={max(brilhos):.0f}: a imagem nunca apareceu"
+    # metade do segmento em opacidade cheia, com folga para o encode
+    assert len(cheios) >= len(brilhos) * 0.4, (
+        f"{len(cheios)}/{len(brilhos)} frames na tela; perfil={[round(y) for y in brilhos]}"
+    )

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import os
+from hashlib import sha256
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class AnthropicConfig(BaseModel):
@@ -141,6 +142,11 @@ class RenderConfig(BaseModel):
     # Usado so quando ha corte: sem corte o audio sai por stream copy.
     audio_bitrate_kbps: int = 192
     crossfade_seconds: float = 0.4
+    # Fracao maxima do segmento que cada fade pode ocupar. Sem teto, um b-roll
+    # de 0.6s tem pico de opacidade em 2/3 e zero frame na tela (medido). 0.25
+    # garante metade do segmento em opacidade cheia qualquer que seja a
+    # duracao. Ver `fade_for` em filtergraph.py para os numeros medidos.
+    max_fade_ratio: float = 0.25
     solid_fallback_color: str = "0x1B2A33"
     max_filtergraph_chars: int = 3000
     ken_burns: KenBurnsConfig = Field(default_factory=KenBurnsConfig)
@@ -162,7 +168,13 @@ class SubtitlesConfig(BaseModel):
 
 
 class Config(BaseModel):
-    style_suffix: str
+    # Um dos dois: `style_suffix` literal, ou `style` nomeando uma entrada de
+    # `styles`. Depois do validador, `style_suffix` sempre carrega o texto
+    # resolvido, entao o resto do pipeline nao sabe qual caminho foi usado —
+    # inclusive a chave de cache dos assets, que ja dependia dele.
+    style_suffix: str = ""
+    style: str = ""
+    styles: dict[str, str] = Field(default_factory=dict)
     anthropic: AnthropicConfig
     editorial: EditorialConfig
     transcribe: TranscribeConfig = Field(default_factory=TranscribeConfig)
@@ -178,6 +190,56 @@ class Config(BaseModel):
     # Preenchido no load, nao vem do YAML: tudo que e caminho relativo no
     # config resolve contra a raiz do projeto, nao contra o cwd.
     root: Path = Field(default=Path("."), exclude=True)
+
+    @model_validator(mode="after")
+    def _resolve_style(self) -> Config:
+        """Resolve `style` + `styles` para o texto final de `style_suffix`.
+
+        Falha alto e cedo de proposito: estilo errado nao quebra nada, so
+        produz um video com as imagens erradas — e ai o dinheiro da geracao
+        ja foi gasto. Um nome digitado errado tem que parar o pipeline antes
+        da primeira chamada, nao virar string vazia.
+        """
+        if self.style and self.style_suffix:
+            raise ValueError(
+                "defina `style` (nome dentro de `styles`) OU `style_suffix` "
+                "(o texto literal), nao os dois"
+            )
+        if self.style:
+            if self.style not in self.styles:
+                disponiveis = ", ".join(sorted(self.styles)) or "(nenhum)"
+                raise ValueError(
+                    f"style: '{self.style}' nao existe em `styles`. "
+                    f"Disponiveis: {disponiveis}"
+                )
+            self.style_suffix = self.styles[self.style]
+        if not self.style_suffix.strip():
+            raise ValueError(
+                "nenhum estilo definido: preencha `style` (com `styles`) ou `style_suffix`"
+            )
+        return self
+
+    @property
+    def style_name(self) -> str:
+        """Identidade do estilo, para o banco nao reusar imagem de outro.
+
+        Com `styles` e o nome; com `style_suffix` literal e um hash do texto,
+        porque o texto inteiro seria uma chave grande demais para guardar em
+        cada linha e comparar. O que importa e ser estavel e distinguir.
+        """
+        if self.style:
+            return self.style
+        return "suffix:" + sha256(self.style_suffix.strip().encode()).hexdigest()[:12]
+
+    @property
+    def known_styles(self) -> dict[str, str]:
+        """Nome -> sufixo de todo estilo que este config conhece.
+
+        Com `styles` e o proprio mapa; com `style_suffix` literal e a unica
+        entrada. O banco usa isto na migracao para reconhecer a qual estilo
+        cada imagem antiga pertence, pelo `prompt` que ficou guardado.
+        """
+        return dict(self.styles) if self.styles else {self.style_name: self.style_suffix}
 
     def path(self, relative: str) -> Path:
         candidate = Path(relative)

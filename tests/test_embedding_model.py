@@ -141,10 +141,14 @@ def test_banco_sem_a_coluna_e_migrado(tmp_path):
     conn.close()
 
     bank = open_bank(tmp_path, ENGLISH, seed=1.0)
+    # a linha legada ganhou o modelo ativo, que e o ponto deste teste
     assert bank.stats()["by_model"] == {ENGLISH: 1}
-    # e o asset legado segue reusavel
-    hit = bank.find_similar("a desk with a notebook")
-    assert hit is not None
+    # Ela NAO volta pelo reuso, e a razao e a outra migracao: sem `prompt`
+    # guardado nao ha como saber em que estilo foi gerada, e reusar imagem de
+    # estilo desconhecido e o dano que a coluna `style` existe para evitar.
+    # O caso recuperavel esta em tests/test_style_isolation.py.
+    assert bank.stats()["by_style"] == {"?": 1}
+    assert bank.find_similar("a desk with a notebook") is None
 
 
 # --------------------------------------------------------------------------
