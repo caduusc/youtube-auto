@@ -99,6 +99,73 @@ def run(
             bank.close()
 
 
+def regenerate(
+    script: Script,
+    board: Storyboard,
+    assets: Assets,
+    beat_id: int,
+    config: Config,
+) -> Assets:
+    """Troca a imagem de UM beat por uma nova. Gasta.
+
+    Tres coisas acontecem, e as tres importam:
+
+    O provider e chamado a forca, sem passar por banco nem stock — ver
+    `AssetResolver.regenerate` para por que uma resolucao normal devolveria a
+    imagem recusada de volta.
+
+    O asset antigo e APAGADO do banco. Deixar a linha la faz o proximo video
+    com um conceito parecido reusar exatamente a imagem que voce rejeitou, e em
+    silencio, porque reuso do banco nao passa por aprovacao.
+
+    E o `assets.json` e reescrito, o que muda o `digest()` e portanto REVOGA a
+    aprovacao das imagens. E o comportamento certo: voce aprovou um conjunto,
+    e este e outro. Ver `Assets.digest`.
+    """
+    work = config.work_dir / script.slug
+    beat = next((b for b in board.beats if b.beat_id == beat_id), None)
+    if beat is None:
+        raise ValueError(f"o storyboard nao tem beat {beat_id}")
+
+    antigo = next((i for i in assets.items if i.beat_id == beat_id), None)
+    if antigo is None:
+        raise ValueError(f"nao ha imagem para o beat {beat_id} em assets.json")
+
+    unit = config.image_provider.replicate.cost_usd_per_image
+    teto = config.budget.max_usd_per_video
+    if assets.total_cost_usd + unit > teto:
+        raise BudgetExceeded(assets.estimate.model_copy(update={
+            "worst_case_usd": round(assets.total_cost_usd + unit, 4),
+            "budget_usd": teto,
+            "within_budget": False,
+        }))
+
+    with stage("regenerate", slug=script.slug, beat=beat_id):
+        bank = open_bank(config)
+        try:
+            resolver = build_resolver(config, bank, dry_run=False)
+            novo = resolver.regenerate(from_storyboard([beat])[0])
+            if antigo.asset_id is not None:
+                bank.forget(antigo.asset_id)
+        finally:
+            bank.close()
+
+    items = [novo if i.beat_id == beat_id else i for i in assets.items]
+    by_origin: dict[str, int] = {}
+    for item in items:
+        by_origin[item.origin] = by_origin.get(item.origin, 0) + 1
+
+    atualizado = assets.model_copy(update={
+        "items": items,
+        "total_cost_usd": round(sum(i.cost_usd for i in items), 4),
+        "by_origin": by_origin,
+    })
+    write_json(work / "assets.json", atualizado)
+    log("regenerate.ok", beat=beat_id, file=novo.path,
+        custo=f"${novo.cost_usd:.4f}", detail="a aprovacao das imagens foi revogada")
+    return atualizado
+
+
 def render_text(assets: Assets, board: Storyboard, config: Config) -> str:
     """A revisao das imagens no terminal, antes de aprovar.
 

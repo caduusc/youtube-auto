@@ -131,11 +131,27 @@ class BudgetConfig(BaseModel):
 
 
 class ReplicateConfig(BaseModel):
+    """O provider de imagem.
+
+    `input` vai inteiro para o campo `input` da predicao, e o pipeline so
+    acrescenta o `prompt` (que e dele) e o `output_format` (que ele precisa
+    conhecer para nomear o arquivo). Era um dict fixo no codigo com
+    `num_outputs: 1` dentro, o que tornava "provider plugavel" falso: o
+    `flux-1.1-pro`, por exemplo, nao aceita `num_outputs` e recusa a
+    requisicao. Configuravel, trocar de modelo e uma linha de YAML — e os
+    knobs que mudam a IMAGEM sem mudar o conceito (`guidance`,
+    `num_inference_steps`, `megapixels`) ficam na sua mao sem passar por aqui.
+    """
+
     env: str
     model: str
     cost_usd_per_image: float
-    aspect_ratio: str = "16:9"
+    # Fica de fora do `input` porque quem usa e o pipeline: e a extensao do
+    # arquivo que o banco e o render vao abrir.
     output_format: str = "png"
+    input: dict[str, object] = Field(
+        default_factory=lambda: {"aspect_ratio": "16:9", "num_outputs": 1}
+    )
     timeout_seconds: float = 120.0
 
 

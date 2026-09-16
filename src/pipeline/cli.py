@@ -320,6 +320,29 @@ def cmd_images(args, config: Config) -> int:
     return 0
 
 
+def cmd_regenerate(args, config: Config) -> int:
+    """Troca a imagem de um beat por uma nova. Gasta.
+
+    Existe na CLI e nao so na UI de proposito: a promessa e que a CLI faz tudo
+    sozinha, e um comando que so existe no navegador quebra isso.
+    """
+    work = work_dir(args.slug, config)
+    script = read_script(work / "script.md")
+    board = load_storyboard(work, args.slug)
+
+    try:
+        assets = stages.images.regenerate(
+            script, board, read_json(work / "assets.json", Assets),
+            args.beat, config)
+    except BudgetExceeded:
+        return 2
+
+    print(stages.images.render_text(assets, board, config))
+    print("  A aprovacao das imagens foi revogada. Revise e aprove de novo:")
+    print(f"    pipeline approve images {args.slug}\n")
+    return 0
+
+
 def cmd_align(args, config: Config) -> int:
     """Estagio 6: onde cada imagem cai na fala gravada."""
     work = config.work_dir / args.slug
@@ -413,7 +436,7 @@ def cmd_approve(args, config: Config) -> int:
                 f"rode antes: pipeline images {args.slug}"
             )
         assets = read_json(caminho, Assets)
-        approval.grant(work, "images", assets.input_hash)
+        approval.grant(work, "images", assets.digest())
         print(f"\n  {len(assets.items)} imagens aprovadas "
               f"(USD {assets.total_cost_usd:.4f}). Agora grave, e depois:"
               f"\n    pipeline shoot {args.slug} <arquivo.mp4>\n")
@@ -513,6 +536,11 @@ def build_parser() -> argparse.ArgumentParser:
     align_cmd = sub.add_parser("align", help="onde cada imagem cai na fala gravada")
     align_cmd.add_argument("slug")
 
+    regen_cmd = sub.add_parser(
+        "regenerate", help="gera outra imagem para um beat (gasta)")
+    regen_cmd.add_argument("slug")
+    regen_cmd.add_argument("beat", type=int, help="o beat_id da imagem a trocar")
+
     sub.add_parser("status", help="onde cada video esta")
 
     ui_cmd = sub.add_parser("ui", help="sobe a UI local de revisao e aprovacao")
@@ -554,6 +582,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_shoot(args, config)
         if args.command == "align":
             return cmd_align(args, config)
+        if args.command == "regenerate":
+            return cmd_regenerate(args, config)
         if args.command == "approve":
             return cmd_approve(args, config)
         if args.command == "status":

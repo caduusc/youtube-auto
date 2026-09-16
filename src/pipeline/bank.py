@@ -379,6 +379,27 @@ class AssetBank:
             "db_path": str(self.db_path),
         }
 
+    def forget(self, asset_id: int, *, delete_file: bool = True) -> bool:
+        """Apaga UM asset do banco, e o arquivo dele.
+
+        Existe para a regeracao. Uma imagem que voce rejeitou tem que sair do
+        banco, nao so do video: deixar a linha la faz o proximo video com um
+        conceito parecido reusar exatamente a imagem que voce recusou — e em
+        silencio, porque reuso do banco nao passa por aprovacao nenhuma.
+        """
+        row = self.conn.execute(
+            "SELECT path FROM assets WHERE id = ?", (asset_id,)).fetchone()
+        if row is None:
+            return False
+        if delete_file:
+            target = self.absolute(row["path"])
+            if target.exists():
+                target.unlink()
+        self.conn.execute("DELETE FROM assets WHERE id = ?", (asset_id,))
+        self.conn.commit()
+        log("bank.forget", asset=asset_id, path=row["path"])
+        return True
+
     def prune(self, unused_days: int, *, delete_files: bool = True) -> list[str]:
         """Remove assets sem uso ha N dias (ou nunca usados e criados ha N dias)."""
         cutoff = f"-{unused_days} days"

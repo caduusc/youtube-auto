@@ -274,9 +274,21 @@ class AssetResolver:
                       total_cost_usd=0.0, by_origin=by_origin)
 
     def _destination(self, prompt: str) -> Path:
-        from .util import now_iso
+        """Um caminho novo para a imagem: prefixo do prompt, sufixo aleatorio.
 
-        name = f"{text_hash(prompt, now_iso())[:16]}.{self.image_extension}"
+        O sal era `now_iso()`, que tem granularidade de SEGUNDO — dois pedidos
+        com o mesmo prompt no mesmo segundo caiam no mesmo arquivo, e ai a
+        segunda imagem sobrescrevia a primeira em disco e colidia na coluna
+        unica `assets.path` do banco. Parecia improvavel e e exatamente o caso
+        da REGERACAO: mesmo prompt, de novo, e o `forget` do asset antigo
+        apagaria o arquivo que acabou de ser gerado.
+
+        O prefixo do prompt fica porque e util de olho: os arquivos de um
+        mesmo conceito ficam vizinhos no diretorio.
+        """
+        from uuid import uuid4
+
+        name = f"{text_hash(prompt)[:12]}-{uuid4().hex[:8]}.{self.image_extension}"
         return self.images_dir / name
 
     def _index(
@@ -334,6 +346,27 @@ class AssetResolver:
         return AssetItem(**decision.identity, origin="stock",
                          path=self.bank.relative(destination), asset_id=asset_id,
                          prompt=credit, cost_usd=0.0, note=warning)
+
+    # -- regeracao de um pedido so ----------------------------------------
+
+    def regenerate(self, request: ImageRequest) -> AssetItem:
+        """Gera uma imagem nova para ESTE pedido, sem consultar banco nem stock.
+
+        Forcar geracao nao e atalho, e o unico comportamento correto aqui.
+        Quem clica em "regerar" esta dizendo que a imagem saiu errada — e a
+        imagem errada acabou de entrar no banco com exatamente este conceito,
+        entao uma resolucao normal a devolveria de volta com similaridade 1.0.
+        Stock tambem nao serve: se o conceito fosse generico o bastante para
+        foto, ele ja teria vindo de la na primeira vez.
+
+        Nao mexe no banco do asset antigo: quem chama decide isso, porque e la
+        que se sabe qual item esta sendo substituido. Ver `stages/images`.
+        """
+        if self.provider is None:
+            raise RuntimeError(
+                "nao ha provider de imagem configurado, entao nao ha o que regerar"
+            )
+        return self._generate(Decision(request, "generate"))
 
     def _generate(self, decision: Decision) -> AssetItem:
         prompt = self.prompt_for(decision.request)

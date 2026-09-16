@@ -282,6 +282,10 @@ def test_o_acumulador_pega_provider_que_cobra_mais_que_o_config(cenario, cfg):
     """
     script, board, work, provider = cenario
     caro = cfg.model_copy(deep=True)
+    # O config anuncia barato e o provider cobra 0.025: e o unico arranjo em
+    # que o pior caso passa e o gasto real estoura. Explicito aqui para o
+    # teste nao depender de qual modelo o config de exemplo usa.
+    caro.image_provider.replicate.cost_usd_per_image = 0.003
     caro.budget.max_usd_per_video = 0.05          # cabem 2 a 0.025 reais
 
     assets = images.run(script, board, caro)

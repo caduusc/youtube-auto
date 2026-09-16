@@ -238,12 +238,44 @@ image_provider:
   active: replicate
   replicate:
     env: REPLICATE_API_TOKEN
-    # flux-schnell: ~USD 0.003/imagem, 4 passos, otimo para ilustracao flat.
-    # flux-dev:     ~USD 0.025/imagem, mais fiel a prompts longos.
-    model: black-forest-labs/flux-schnell
-    cost_usd_per_image: 0.003
-    aspect_ratio: "16:9"
+    # flux-dev:     ~USD 0.025/imagem, 20-30 passos, ADERENCIA FORTE AO PROMPT.
+    # flux-schnell: ~USD 0.003/imagem, 4 passos destilados. A propria descricao
+    #   do modelo diz que ele "pode simplificar ou perder elementos em prompts
+    #   complexos" — e o prompt daqui tem ~65 palavras, das quais ~45 sao o
+    #   sufixo de estilo. Um modelo de 4 passos descarta conteudo primeiro, o
+    #   que se parece exatamente com "a imagem nao tem o que eu pedi".
+    #
+    # Com sub-planos a conta fecha nos dois: um video de 15 min com 60% de
+    # cobertura pede ~54 imagens (540s / 10s por imagem de 4 sub-planos).
+    #   flux-schnell  54 x 0.003 = USD 0.16/video  -> R$ 7/mes em 8 videos
+    #   flux-dev      54 x 0.025 = USD 1.35/video  -> R$ 58/mes em 8 videos
+    # O teto de `max_usd_per_video: 1.50` cobre 60 imagens a 0.025. Acima
+    # disso o estagio PARA antes de gastar e mostra a estimativa.
+    model: black-forest-labs/flux-dev
+    cost_usd_per_image: 0.025
+    # Extensao do arquivo que o banco e o render vao abrir. Fora do `input`
+    # porque quem usa e o pipeline, nao o provider.
     output_format: png
+    # Vai inteiro para o campo `input` da predicao. O pipeline so acrescenta o
+    # `prompt`. Era um dict fixo no codigo, o que tornava "provider plugavel"
+    # falso — o flux-1.1-pro, por exemplo, recusa `num_outputs`.
+    input:
+      aspect_ratio: "16:9"
+      num_outputs: 1
+      # Os knobs do flux-dev que mudam a IMAGEM sem mudar o conceito. Mexer
+      # aqui invalida os assets, entao calibrar funciona.
+      #
+      # guidance: quanto o modelo obedece ao prompt em vez de buscar o que
+      #   parece bonito. Default 3.0; 2.0-2.5 da imagem mais natural, 4-5
+      #   obedece mais e endurece. E o primeiro lugar a mexer se a imagem
+      #   estiver linda e errada.
+      # num_inference_steps: 28 e o default. Menos e mais rapido e mais raso.
+      # megapixels: "1" da 1344x768 em 16:9. E o teto do flux-dev, e por isso
+      #   que o aviso de upscale do render existe: 1344px amplia 3.2x num
+      #   quadrante de sub-plano. Resolucao maior exige outro modelo.
+      guidance: 3.0
+      num_inference_steps: 28
+      megapixels: "1"
     timeout_seconds: 120
 
 stock:

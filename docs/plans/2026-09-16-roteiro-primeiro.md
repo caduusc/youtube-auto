@@ -326,13 +326,67 @@ Três coisas que só apareceram construindo:
   *pode* mudar — cobertura e taxa de troca, que dependem de quão rápido você
   falou — sai como aviso de verdade.
 
-### O que ainda falta
+### A folha de contato, e o que ela obrigou a consertar
 
-A tela de revisão das imagens na UI (`GET /{slug}/assets`, o contact sheet, e
-`POST /{slug}/assets/{beat}/regenerate`). Agora ela é construível: o estágio 3
-existe e `assets.json` é indexado por beat. Por enquanto a revisão é
-`pipeline images <slug>` no terminal, que imprime conceito e arquivo lado a
-lado, e `pipeline approve images <slug>`.
+As três rotas de `assets` existem. Duas coisas apareceram construindo:
+
+- **`Assets` ganhou `digest()`, separado do `input_hash`.** O `input_hash` é de
+  *onde* o artefato foi derivado (o storyboard) e serve de chave de cache;
+  regerar uma imagem não muda isso. Com a aprovação guardada em cima dele, uma
+  imagem que você nunca viu ficaria coberta por uma aprovação antiga. Com o
+  digest do conteúdo, regerar revoga a aprovação sozinho — o mesmo mecanismo do
+  roteiro.
+- **O nome do arquivo colidia.** O sal era `now_iso()`, com granularidade de
+  *segundo*: dois pedidos com o mesmo prompt no mesmo segundo caíam no mesmo
+  arquivo. Parecia improvável e é exatamente o caso da regeração — mesmo
+  prompt, de novo — onde a segunda imagem sobrescrevia a primeira em disco e
+  colidia na coluna única `assets.path`. Agora é prefixo do prompt + sufixo
+  aleatório.
+
+E regerar **apaga a imagem recusada do banco**: deixar a linha lá faz o próximo
+vídeo com conceito parecido reusar exatamente a imagem que você rejeitou, em
+silêncio, porque reuso do banco não passa por aprovação nenhuma.
+
+## O provider, finalmente plugável — e o flux-dev
+
+O `input` da predicção era um dict fixo no código, com `num_outputs: 1`
+dentro. Isso tornava "provider plugável" falso: o flux-1.1-pro, por exemplo,
+recusa `num_outputs`. Agora o YAML manda o `input` inteiro e o pipeline só
+acrescenta o `prompt` (por último, para nenhuma chave do YAML poder
+sobrescrevê-lo) e o `output_format` (que ele precisa conhecer para nomear o
+arquivo).
+
+Com isso a troca prevista neste plano finalmente entrou no
+`config.example.yaml`: **flux-schnell → flux-dev**, 0.003 → 0.025 por imagem. É
+a linha que mais diretamente responde ao "não quero delírio": a descrição do
+flux-schnell diz que ele *"pode simplificar ou perder elementos em prompts
+complexos"*, e o prompt daqui tem ~65 palavras das quais ~45 são o sufixo de
+estilo — um modelo de 4 passos descarta conteúdo primeiro.
+
+A conta, agora com sub-planos (54 imagens num vídeo de 15 min a 60% de
+cobertura):
+
+| modelo | por imagem | por vídeo | 8 vídeos/mês |
+|---|---|---|---|
+| flux-schnell | USD 0.003 | USD 0.16 | R$ 7 |
+| flux-dev | USD 0.025 | USD 1.35 | R$ 58 |
+
+`max_usd_per_video: 1.50` **não mudou** — ele cobre 60 imagens a 0.025, e acima
+disso o estágio para antes de gastar e mostra a estimativa. O teto é dele.
+
+Três knobs do flux-dev passaram a viver no config, e mexer neles invalida os
+assets (então calibrar funciona): `guidance` (quanto o modelo obedece ao prompt
+em vez de buscar o que parece bonito — o primeiro lugar a mexer se a imagem
+sair linda e errada), `num_inference_steps` e `megapixels`.
+
+### O que ainda não sei
+
+`megapixels: "1"` é o teto do flux-dev, e dá 1344x768 em 16:9. É por isso que o
+aviso de upscale existe: **1344px amplia 3.2x num quadrante de sub-plano.**
+Resolução maior exige outro modelo (o flux-1.1-pro aceita width/height até
+4MP, ~USD 0.04/imagem) ou um upscaler. Trocar de modelo agora é uma linha de
+YAML, mas o número é uma decisão de custo — e o aviso na folha de contato é
+que vai dizer se ela precisa ser tomada.
 
 ## Mudanças de config
 

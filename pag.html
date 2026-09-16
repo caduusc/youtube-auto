@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>imagens · esteira-de-video</title><style>
+:root {
+  --fundo: #14181b; --painel: #1b2227; --linha: #2b353c;
+  --texto: #dfe6ea; --fraco: #8b9aa3; --claro: #f4f8fa;
+  --ok: #6fca8f; --atencao: #e8b04b; --erro: #e8726b;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; padding: 2rem 1rem; background: var(--fundo); color: var(--texto);
+  font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif;
+}
+main { max-width: 60rem; margin: 0 auto; }
+a { color: var(--claro); }
+h1 { font-size: 1.4rem; margin: 0 0 .25rem; }
+h1 a { text-decoration: none; color: var(--fraco); font-weight: 400; }
+p.sub { color: var(--fraco); margin: 0 0 2rem; }
+section {
+  background: var(--painel); border: 1px solid var(--linha);
+  border-radius: 8px; padding: 1.25rem; margin-bottom: 1.25rem;
+}
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: .5rem .5rem; border-bottom: 1px solid var(--linha); }
+th { color: var(--fraco); font-weight: 500; font-size: .85rem; }
+tr:last-child td { border-bottom: none; }
+.tag { font-size: .8rem; padding: .1rem .5rem; border-radius: 99px; border: 1px solid var(--linha); }
+.aprovado { color: var(--ok); border-color: var(--ok); }
+.editado { color: var(--atencao); border-color: var(--atencao); }
+.ausente { color: var(--fraco); }
+.erro { color: var(--erro); }
+textarea {
+  width: 100%; min-height: 26rem; background: var(--fundo); color: var(--texto);
+  border: 1px solid var(--linha); border-radius: 6px; padding: .75rem;
+  font: 14px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+button {
+  background: var(--claro); color: #12171a; border: 0; border-radius: 6px;
+  padding: .55rem 1.1rem; font-size: .95rem; font-weight: 600; cursor: pointer;
+}
+button.leve { background: transparent; color: var(--texto); border: 1px solid var(--linha); }
+.beat { border-top: 1px solid var(--linha); padding: 1rem 0; }
+.beat:first-of-type { border-top: 0; padding-top: 0; }
+.beat h3 { margin: 0 0 .5rem; font-size: 1rem; }
+.beat h3 span { color: var(--fraco); font-weight: 400; font-size: .85rem; }
+.grade { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; }
+.grade dt { color: var(--fraco); font-size: .8rem; margin-top: .6rem; }
+.grade dd { margin: 0; }
+.fala { color: var(--fraco); font-size: .95rem; }
+mark { background: #3c4a2a; color: var(--claro); padding: 0 .15rem; border-radius: 3px; }
+.roteiro { white-space: pre-wrap; font: 14px/1.7 ui-monospace, Menlo, monospace; }
+code { background: var(--fundo); padding: .1rem .35rem; border-radius: 4px; font-size: .9em; }
+.folha { display: grid; grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr)); gap: 1.25rem; }
+.carta { border: 1px solid var(--linha); border-radius: 8px; overflow: hidden; background: var(--fundo); }
+.carta img { display: block; width: 100%; aspect-ratio: 16/9; object-fit: cover; background: var(--painel); }
+.carta .vazio {
+  display: flex; align-items: center; justify-content: center; aspect-ratio: 16/9;
+  color: var(--fraco); font-size: .85rem; background: var(--painel);
+}
+.carta .corpo { padding: .8rem; }
+.carta h3 { margin: 0 0 .4rem; font-size: .95rem; }
+.carta h3 span { color: var(--fraco); font-weight: 400; font-size: .8rem; }
+.carta p { margin: .3rem 0; font-size: .85rem; }
+.carta form { margin-top: .6rem; }
+@media (max-width: 44rem) { .grade { grid-template-columns: 1fr; } }
+</style></head><body><main><h1>imagens · esteira-de-video <a href="/">&larr; todos</a></h1><section><p>4 imagens &nbsp; USD 0.1000 / BRL 0.54 &nbsp; <span class="tag ">escrito</span> &nbsp; <a href="/esteira-de-video/storyboard">&larr; storyboard</a></p><form method="post" action="/esteira-de-video/assets/approve"><button type="submit">Aprovar</button></form></section><section><div class="folha"><div class="carta"><img src="/esteira-de-video/assets/1/image" alt="an empty editing suite at night, three dark monitors, one desk lamp on" loading="lazy"><div class="corpo"><h3>beat 1 <span>3 planos de 2.5s</span></h3><p>an empty editing suite at night, three dark monitors, one desk lamp on</p><p class="ausente">generated · USD 0.025</p><p class="erro">1344x768, amplia 3.2x no sub-plano</p><form method="post" action="/esteira-de-video/assets/1/regenerate"><button class="leve" type="submit">Regerar (USD 0.003)</button></form></div></div><div class="carta"><img src="/esteira-de-video/assets/2/image" alt="a cinema camera sitting unused on a shelf beside a stack of invoices" loading="lazy"><div class="corpo"><h3>beat 2 <span>4 planos de 2.5s</span></h3><p>a cinema camera sitting unused on a shelf beside a stack of invoices</p><p class="ausente">generated · USD 0.025</p><p class="erro">1344x768, amplia 3.2x no sub-plano</p><form method="post" action="/esteira-de-video/assets/2/regenerate"><button class="leve" type="submit">Regerar (USD 0.003)</button></form></div></div><div class="carta"><img src="/esteira-de-video/assets/3/image" alt="a long workshop bench with eighty identical wooden spools in a row" loading="lazy"><div class="corpo"><h3>beat 3 <span>4 planos de 2.5s</span></h3><p>a long workshop bench with eighty identical wooden spools in a row</p><p class="ausente">generated · USD 0.025</p><p class="erro">1344x768, amplia 3.2x no sub-plano</p><form method="post" action="/esteira-de-video/assets/3/regenerate"><button class="leve" type="submit">Regerar (USD 0.003)</button></form></div></div><div class="carta"><img src="/esteira-de-video/assets/4/image" alt="a single wooden chair in a wide empty room, morning light" loading="lazy"><div class="corpo"><h3>beat 4 <span>2 planos de 2.5s</span></h3><p>a single wooden chair in a wide empty room, morning light</p><p class="ausente">generated · USD 0.025</p><p class="erro">1344x768, amplia 3.2x no sub-plano</p><form method="post" action="/esteira-de-video/assets/4/regenerate"><button class="leve" type="submit">Regerar (USD 0.003)</button></form></div></div></div></section></main></body></html>
