@@ -13,10 +13,12 @@ from pipeline.filtergraph import (
     Overlay,
     build_graph,
     build_inputs,
+    canvas_for,
     frame_align,
     ken_burns_chain,
     plan_chunks,
     prep_size,
+    region_chain,
 )
 
 
@@ -221,21 +223,37 @@ def test_grafo_pequeno_fica_em_um_chunk(render):
     assert chunks[0].start == 0.0 and chunks[0].end == 200.0
 
 
-def test_grafo_grande_e_quebrado_em_chunks(render):
+@pytest.fixture
+def chunked(render):
+    """`render` com o limite baixo o bastante para os 20 overlays destes
+    testes precisarem de mais de um chunk.
+
+    O limite vive aqui, e nao herdado do config de exemplo, de proposito: o
+    que estes testes cobrem e o comportamento do chunking, nao a calibracao.
+    Acoplados, subir `max_filtergraph_chars` porque o sub-plano multiplicou o
+    grafo por 4 fazia estes testes pararem de exercitar o caminho que eles
+    existem para cobrir — e passar em silencio.
+    """
+    cfg = render.model_copy(deep=True)
+    cfg.max_filtergraph_chars = 3000
+    return cfg
+
+
+def test_grafo_grande_e_quebrado_em_chunks(chunked):
     overlays = [overlay(30 + i * 40, 50 + i * 40) for i in range(20)]
-    chunks = plan_chunks(overlays, 900.0, render)
+    chunks = plan_chunks(overlays, 900.0, chunked)
 
     assert len(chunks) > 1
     for chunk in chunks:
-        graph = build_graph(chunk, render, Path("/w/s.ass"))
-        assert len(graph) <= render.max_filtergraph_chars, f"chunk {chunk.index}: {len(graph)}"
+        graph = build_graph(chunk, chunked, Path("/w/s.ass"))
+        assert len(graph) <= chunked.max_filtergraph_chars, f"chunk {chunk.index}: {len(graph)}"
 
 
-def test_chunks_cobrem_a_timeline_sem_buraco_nem_sobreposicao(render):
+def test_chunks_cobrem_a_timeline_sem_buraco_nem_sobreposicao(chunked):
     """Se as duracoes dos chunks nao somarem exatamente a duracao original,
     o audio (que e stream copy) deriva na concatenacao."""
     overlays = [overlay(30 + i * 40, 50 + i * 40) for i in range(20)]
-    chunks = plan_chunks(overlays, 900.0, render)
+    chunks = plan_chunks(overlays, 900.0, chunked)
 
     assert chunks[0].start == 0.0
     assert chunks[-1].end == 900.0
@@ -244,28 +262,30 @@ def test_chunks_cobrem_a_timeline_sem_buraco_nem_sobreposicao(render):
     assert sum(c.duration for c in chunks) == pytest.approx(900.0)
 
 
-def test_corte_cai_em_aroll_puro(render):
-    """Os dois fades vivem dentro do segmento de b-roll, entao cortar no
-    inicio de um b-roll nunca parte uma transicao no meio."""
+def test_corte_cai_em_aroll_puro(chunked):
+    """Os dois fades vivem dentro do proprio overlay, entao cortar no inicio
+    de um overlay nunca parte uma transicao no meio. Com sub-planos a
+    fronteira pode cair numa emenda da mesma imagem, onde o corte ja e seco —
+    e por isso continua valendo."""
     overlays = [overlay(30 + i * 40, 50 + i * 40) for i in range(20)]
     starts = {o.start for o in overlays}
-    chunks = plan_chunks(overlays, 900.0, render)
+    chunks = plan_chunks(overlays, 900.0, chunked)
     for chunk in chunks[1:]:
         assert chunk.start in starts
 
 
-def test_overlays_ficam_em_tempo_local_do_chunk(render):
+def test_overlays_ficam_em_tempo_local_do_chunk(chunked):
     overlays = [overlay(30 + i * 40, 50 + i * 40) for i in range(20)]
-    chunks = plan_chunks(overlays, 900.0, render)
+    chunks = plan_chunks(overlays, 900.0, chunked)
     for chunk in chunks:
         for local in chunk.overlays:
             assert 0.0 <= local.start < chunk.duration
             assert local.end <= chunk.duration + 1e-6
 
 
-def test_todos_os_overlays_sobrevivem_ao_chunking(render):
+def test_todos_os_overlays_sobrevivem_ao_chunking(chunked):
     overlays = [overlay(30 + i * 40, 50 + i * 40) for i in range(20)]
-    chunks = plan_chunks(overlays, 900.0, render)
+    chunks = plan_chunks(overlays, 900.0, chunked)
     assert sum(len(c.overlays) for c in chunks) == len(overlays)
 
 
@@ -363,3 +383,148 @@ def test_grafo_usa_o_fade_do_segmento(render, overlay_curto_e_longo):
     )
     assert "d=0.25:alpha=1" in graph      # o de 1.0s
     assert "d=0.4:alpha=1" in graph       # o de 8.0s
+
+
+# --------------------------------------------------------------------------
+# sub-planos: a geometria
+# --------------------------------------------------------------------------
+
+
+def test_prep_e_multiplo_de_quatro(render):
+    """Para que o quadrante — metade do prep — caia em pixel par sem o crop
+    precisar arredondar. Sem isso, 1920x1080 daria prep 4302 e quadrante
+    2151, impar, e arredondar para baixo comeria a margem de 0.6px que
+    existe contra ampliar."""
+    width, height = prep_size(render)
+    assert width % 4 == 0 and height % 4 == 0
+
+
+@pytest.mark.parametrize("region", ["full", "top_left", "top_right",
+                                    "bottom_left", "bottom_right"])
+def test_nenhuma_regiao_amplia(render, region):
+    """A propriedade que torna o sub-plano possivel: o `scale` animado de
+    QUALQUER regiao ainda reduz. E o que o quadrante gasta inteiro — ele bate
+    no limite exatamente, por construcao."""
+    prep_w, prep_h = prep_size(render)
+    fonte_w = prep_w if region == "full" else prep_w // 2
+    fonte_h = prep_h if region == "full" else prep_h // 2
+
+    canvas_w, canvas_h = canvas_for(region, render)
+    pedido_w = canvas_w * render.ken_burns.zoom_max
+    pedido_h = canvas_h * render.ken_burns.zoom_max
+
+    assert fonte_w >= pedido_w, f"{region}: {fonte_w}px para {pedido_w:.1f}px pedidos"
+    assert fonte_h >= pedido_h, f"{region}: {fonte_h}px para {pedido_h:.1f}px pedidos"
+
+
+def test_um_terco_ampliaria(render):
+    """Por que o teto e o quadrante e nao uma grade mais fina. Um terco da
+    tela preparada nao alcanca o que o Ken Burns pede — e por isso que
+    `SUB_SHOT_ORDER` tem cinco regioes e nao dez."""
+    prep_w, _ = prep_size(render)
+    pedido = render.width * render.ken_burns.zoom_max
+    assert prep_w // 2 >= pedido
+    assert prep_w // 3 < pedido
+
+
+def test_quadrante_trabalha_na_resolucao_de_saida(render):
+    """A consequencia honesta de `canvas_scale: 2`: no plano cheio o passo de
+    1px do crop cai numa tela 2x e vira meio pixel, no quadrante a tela de
+    trabalho JA e a saida."""
+    assert canvas_for("full", render) == (3840, 2160)
+    assert canvas_for("top_left", render) == (1920, 1080)
+
+
+@pytest.mark.parametrize("region,esperado", [
+    ("top_left", "crop=iw/2:ih/2:0:0,"),
+    ("top_right", "crop=iw/2:ih/2:(iw-ow):0,"),
+    ("bottom_left", "crop=iw/2:ih/2:0:(ih-oh),"),
+    ("bottom_right", "crop=iw/2:ih/2:(iw-ow):(ih-oh),"),
+])
+def test_cada_quadrante_recorta_o_seu_canto(region, esperado):
+    assert region_chain(region) == esperado
+
+
+def test_plano_cheio_nao_recorta_nada():
+    assert region_chain("full") == ""
+
+
+def test_regiao_desconhecida_levanta():
+    with pytest.raises(ValueError, match="regiao de sub-plano desconhecida"):
+        region_chain("meio")
+
+
+def test_recorte_da_regiao_vem_antes_do_ken_burns(render):
+    """A ordem nao e cosmetica: recortar depois do `scale` animado
+    recortaria de uma tela que muda de tamanho a cada frame, e a regiao
+    andaria junto com o zoom."""
+    chain = ken_burns_chain(overlay(0, 2.5, "zoom_in"), render)
+    cheio = ken_burns_chain(Overlay(0, 2.5, "zoom_in", Path("/img/a.png"), "full"), render)
+    quadrante = ken_burns_chain(
+        Overlay(0, 2.5, "zoom_in", Path("/img/a.png"), "bottom_left"), render)
+
+    assert chain == cheio                      # `full` e o default
+    assert quadrante.startswith("crop=iw/2:ih/2:0:(ih-oh),scale=")
+
+
+def test_zoompan_recorta_depois_do_select(config):
+    """Antes do select, o crop rodaria em cada frame do `-loop 1` para ser
+    descartado em seguida."""
+    render = config.render.model_copy(deep=True)
+    render.ken_burns.engine = "zoompan"
+    chain = ken_burns_chain(
+        Overlay(0, 2.5, "zoom_in", Path("/img/a.png"), "top_right"), render)
+    assert chain.startswith("select='eq(n\\,0)',crop=iw/2:ih/2:(iw-ow):0,zoompan=")
+
+
+# --------------------------------------------------------------------------
+# sub-planos: os fades da emenda
+# --------------------------------------------------------------------------
+
+
+def _fades(graph: str, label: str) -> list[str]:
+    """Os filtros de fade da cadeia daquele label."""
+    trecho = next(p for p in graph.split(";\n") if p.endswith(f"[{label}]"))
+    return [f for f in trecho.split(",") if f.startswith("fade=")]
+
+
+def test_emenda_entre_sub_planos_nao_tem_fade(render):
+    """A propriedade que o sub-plano existe para nao quebrar: um fade no meio
+    da faixa faria a imagem DO USUARIO reaparecer por 400ms entre dois planos
+    da mesma foto. So a primeira ponta entra e so a ultima sai."""
+    planos = [
+        Overlay(0.0, 2.5, "zoom_in", Path("/i.png"), "full", fade_in=0.4, fade_out=0.0),
+        Overlay(2.5, 5.0, "pan_right", Path("/i.png"), "top_left", fade_in=0.0, fade_out=0.0),
+        Overlay(5.0, 7.5, "zoom_out", Path("/i.png"), "bottom_right", fade_in=0.0, fade_out=0.4),
+    ]
+    graph = build_graph(Chunk(0, 0.0, 30.0, planos), render, None)
+
+    assert _fades(graph, "b1") == ["fade=t=in:st=0:d=0.4:alpha=1"]
+    assert _fades(graph, "b2") == []
+    assert _fades(graph, "b3") == ["fade=t=out:st=2.100:d=0.4:alpha=1"]
+
+
+def test_fade_none_continua_derivando_da_duracao(render):
+    """O caminho de sempre, de um plano so por faixa, nao muda."""
+    graph = build_graph(Chunk(0, 0.0, 30.0, [overlay(2.0, 3.0)]), render, None)
+    assert _fades(graph, "b1") == [
+        "fade=t=in:st=0:d=0.25:alpha=1", "fade=t=out:st=0.750:d=0.25:alpha=1",
+    ]
+
+
+def test_regiao_e_fade_sobrevivem_a_divisao_em_chunks(render):
+    """`_localize` reescreve os tempos; se ele perder a regiao, todo plano de
+    um video longo volta a ser o plano cheio — e nada falharia."""
+    render = render.model_copy(deep=True)
+    render.max_filtergraph_chars = 600
+    planos = [
+        Overlay(10.0, 12.5, "zoom_in", Path("/i.png"), "full", fade_in=0.4, fade_out=0.0),
+        Overlay(12.5, 15.0, "pan_right", Path("/i.png"), "bottom_right", 0.0, 0.0),
+        Overlay(60.0, 62.5, "zoom_out", Path("/i.png"), "top_right", 0.0, 0.4),
+    ]
+    chunks = plan_chunks(planos, 120.0, render)
+    assert len(chunks) > 1
+
+    vistos = [(o.region, o.fade_in, o.fade_out) for c in chunks for o in c.overlays]
+    assert vistos == [("full", 0.4, 0.0), ("bottom_right", 0.0, 0.0),
+                      ("top_right", 0.0, 0.4)]

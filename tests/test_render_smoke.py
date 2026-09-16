@@ -499,3 +499,89 @@ def test_broll_curto_chega_a_opacidade_cheia(smoke_config, media):
     assert len(cheios) >= len(brilhos) * 0.4, (
         f"{len(cheios)}/{len(brilhos)} frames na tela; perfil={[round(y) for y in brilhos]}"
     )
+
+
+def _luma(video: Path, at: float) -> int:
+    """Brilho medio do frame em `at`, em um byte.
+
+    `scale=1:1:flags=area` e media de caixa sobre o frame inteiro — nao uma
+    amostra de um pixel, que num plano com movimento cairia em lugar
+    diferente a cada frame.
+    """
+    out = subprocess.run(
+        ["ffmpeg", "-v", "error", "-ss", f"{at:.4f}", "-i", str(video),
+         "-frames:v", "1", "-vf", "scale=1:1:flags=area",
+         "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+        capture_output=True, check=True,
+    )
+    return out.stdout[0]
+
+
+def test_sub_planos_mostram_regioes_diferentes_da_mesma_imagem(smoke_config, media):
+    """A propriedade central do sub-plano, medida em vez de argumentada.
+
+    A imagem tem os quatro quadrantes em tons distintos, entao o brilho medio
+    do frame DIZ qual regiao esta na tela. Medido:
+
+        full          Y=122      (ve os quatro quadrantes)
+        top_left      Y= 17
+        bottom_right  Y=242
+        top_right     Y= 93
+
+    O teste discrimina — verificado forcando `region="full"` nos quatro
+    planos, o que da Y=122/129/136/129. Ou seja: sem o recorte, os quatro
+    planos ficam dentro de 14 pontos um do outro E dentro de 8 pontos do
+    a-roll (Y=130). Nem este teste nem o de cobertura de b-roll veriam a
+    diferenca por outro caminho; e o brilho por regiao que a ve.
+    """
+    from pipeline.filtergraph import Chunk, build_graph, build_inputs, prep_size
+
+    largura, altura = prep_size(smoke_config.render)
+    imagem = smoke_config.work_dir / "quadrantes.png"
+    imagem.parent.mkdir(parents=True, exist_ok=True)
+    cantos = [(0, 0), (largura // 2, 0), (0, altura // 2), (largura // 2, altura // 2)]
+    caixas = ",".join(
+        f"drawbox=x={x}:y={y}:w={largura // 2}:h={altura // 2}"
+        f":color=0x{tom:02X}{tom:02X}{tom:02X}:t=fill"
+        for (x, y), tom in zip(cantos, [0x20, 0x60, 0xA0, 0xE0])
+    )
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-f", "lavfi",
+         "-i", f"color=c=black:s={largura}x{altura}", "-vf", caixas,
+         "-frames:v", "1", str(imagem)],
+        check=True, capture_output=True,
+    )
+
+    inicio, fim = 6.0, 16.0        # 10s = 4 planos de 2.5s
+    edl_um_broll = EDL(
+        input_hash="x", model="test", attempts=1, duration=DURATION,
+        segments=[EDLSegment(kind="broll", first_segment=0, last_segment=0,
+                             start=inicio, end=fim)],
+        stats=EDLStats(broll_ratio=(fim - inicio) / DURATION, switches_per_minute=1.0,
+                       switches_per_minute_max=1.0, n_aroll=0, n_broll=1,
+                       broll_seconds=fim - inicio),
+    )
+    planos = render.build_overlays(edl_um_broll, {0: imagem}, smoke_config)
+    assert [p.region for p in planos] == ["full", "top_left", "bottom_right", "top_right"]
+
+    chunk = Chunk(0, 0.0, DURATION, planos)
+    saida = smoke_config.work_dir / "sub_planos.mp4"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y",
+         *build_inputs(chunk, media["source"], smoke_config.render),
+         "-filter_complex", build_graph(chunk, smoke_config.render, None).replace(";\n", ";"),
+         "-map", "[vout]", "-an",
+         "-c:v", "libx264", "-crf", "28", "-preset", "ultrafast", str(saida)],
+        check=True, capture_output=True,
+    )
+
+    medido = {p.region: _luma(saida, (p.start + p.end) / 2) for p in planos}
+    perfil = {r: int(y) for r, y in medido.items()}
+
+    # cada plano mostra a SUA regiao: a ordem dos tons da imagem, preservada
+    assert medido["top_left"] < medido["top_right"] < medido["bottom_right"], perfil
+    # o plano cheio ve os quatro quadrantes, entao cai no meio — nao e nenhum
+    assert medido["top_right"] < medido["full"] < medido["bottom_right"], perfil
+    # separacao bem acima dos 14 pontos que o caminho sem recorte produz
+    valores = sorted(medido.values())
+    assert min(b - a for a, b in zip(valores, valores[1:])) > 20, perfil

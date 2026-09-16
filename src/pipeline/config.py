@@ -9,6 +9,8 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, Field, model_validator
 
+from .schemas import SUB_SHOT_ORDER
+
 
 class AnthropicConfig(BaseModel):
     model: str
@@ -44,6 +46,19 @@ class ScriptConfig(BaseModel):
     """
 
     words_per_minute: float = 150.0
+
+
+class AlignConfig(BaseModel):
+    """Estagio de alinhamento: onde cada beat visual caiu na fala real.
+
+    `min_similarity` so entra em jogo quando a busca LITERAL falha — ou seja,
+    quando voce parafraseou aquele trecho ao gravar. Abaixo dele o beat fica
+    orfao e sai no relatorio, em vez de a imagem ser encaixada num lugar
+    plausivel e errado. 0.55 e frouxo de proposito: um ancora de seis palavras
+    contra um segmento de vinte tem cosseno naturalmente baixo.
+    """
+
+    min_similarity: float = 0.55
 
 
 class TranscribeConfig(BaseModel):
@@ -161,7 +176,10 @@ class RenderConfig(BaseModel):
     # duracao. Ver `fade_for` em filtergraph.py para os numeros medidos.
     max_fade_ratio: float = 0.25
     solid_fallback_color: str = "0x1B2A33"
-    max_filtergraph_chars: int = 3000
+    # Medido: 24 planos (6 imagens com 4 sub-planos cada) dao 9092 chars, e
+    # as emendas do aperto de pausa somam por cima disso. Ver o comentario no
+    # config de exemplo para por que 16000 e nao 3000, e qual e o teto real.
+    max_filtergraph_chars: int = 16000
     # --- sub-planos -------------------------------------------------------
     # Varios planos tirados da MESMA imagem, recortando regioes diferentes.
     # O teto de 4 e geometrico e nao de gosto: com `canvas_scale: 2` o
@@ -170,8 +188,48 @@ class RenderConfig(BaseModel):
     # Nove sub-planos exigiriam `canvas_scale: 3`, ou seja uma imagem de
     # 6453px que nenhum provider entrega.
     max_sub_shots: int = 4
+    # Zero desliga: cada faixa de b-roll vira um plano so, como era antes.
     sub_shot_seconds: float = 2.5
+    # Avisa quando a imagem gerada e pequena demais para o plano em que ela
+    # vai aparecer. Ver `upscale_factor` em stages/render.py: o mesmo arquivo
+    # amplia o DOBRO num quadrante, e e esse numero que responde se o
+    # "delirio" percebido e aderencia do modelo ou falta de resolucao.
+    upscale_warn_factor: float = 1.5
     ken_burns: KenBurnsConfig = Field(default_factory=KenBurnsConfig)
+
+    @model_validator(mode="after")
+    def _sub_planos_cabem_na_geometria(self) -> RenderConfig:
+        """Duas condicoes geometricas, checadas antes do primeiro ffmpeg.
+
+        Nenhuma das duas quebraria o render: as duas produziriam video pior em
+        silencio, depois de o dinheiro das imagens ja ter sido gasto.
+
+        `max_sub_shots` acima do numero de regioes que existem faria dois
+        planos recortarem o mesmo pedaco da imagem. O corte seco entre eles
+        nao pareceria um corte — pareceria o movimento saltando dentro da
+        mesma moldura, que e pior que nao cortar.
+
+        `canvas_scale` abaixo de 2 nao tem meio para dar ao quadrante: o
+        quadrante sai com metade da tela preparada, e para preencher a saida
+        ele teria que ser ampliado. E exatamente o que `prep_size` existe para
+        evitar, e a invariante e `canvas_scale: 2` <=> quadrante nativo.
+        """
+        if self.sub_shot_seconds <= 0 or self.max_sub_shots <= 1:
+            return self
+        if self.max_sub_shots > len(SUB_SHOT_ORDER):
+            raise ValueError(
+                f"render.max_sub_shots: {self.max_sub_shots} planos, mas so existem "
+                f"{len(SUB_SHOT_ORDER)} regioes distintas na imagem "
+                f"({', '.join(SUB_SHOT_ORDER)}) — dois planos recortariam o mesmo pedaco"
+            )
+        if self.ken_burns.canvas_scale < 2:
+            raise ValueError(
+                f"render.ken_burns.canvas_scale: {self.ken_burns.canvas_scale} nao "
+                "sustenta sub-plano — o quadrante sairia com metade da tela de "
+                "trabalho e precisaria ser ampliado para preencher a saida. "
+                "Use canvas_scale: 2, ou render.sub_shot_seconds: 0 para desligar"
+            )
+        return self
 
 
 class SubtitlesConfig(BaseModel):
@@ -200,6 +258,7 @@ class Config(BaseModel):
     anthropic: AnthropicConfig
     editorial: EditorialConfig
     script: ScriptConfig = Field(default_factory=ScriptConfig)
+    align: AlignConfig = Field(default_factory=AlignConfig)
     transcribe: TranscribeConfig = Field(default_factory=TranscribeConfig)
     trim: TrimConfig = Field(default_factory=TrimConfig)
     bank: BankConfig

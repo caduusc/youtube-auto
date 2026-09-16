@@ -49,6 +49,10 @@ class TranscriptSegment(BaseModel):
     text: str
     words: list[Word] = Field(default_factory=list)
 
+    @property
+    def duration(self) -> float:
+        return self.end - self.start
+
 
 class Transcript(BaseModel):
     input_hash: str          # hash do audio
@@ -433,18 +437,31 @@ class Storyboard(BaseModel):
         return len(self.beats)
 
 
+Region = Literal["full", "top_left", "top_right", "bottom_left", "bottom_right"]
+
+# A ordem em que os sub-planos varrem a imagem, e ao mesmo tempo o teto de
+# quantos existem. Comeca no plano cheio para o espectador ver o conjunto
+# antes do detalhe, e os quadrantes seguem em diagonal para que dois planos
+# consecutivos nunca compartilhem uma borda — com `top_left` seguido de
+# `top_right` o corte seco pareceria um pan aos saltos em vez de um corte.
+SUB_SHOT_ORDER: tuple[Region, ...] = (
+    "full", "top_left", "bottom_right", "top_right", "bottom_left",
+)
+
+
 class SubShot(BaseModel):
     """Um plano tirado de uma regiao da imagem, ja na timeline.
 
     A regiao e escolhida pelo pipeline e nao pelo modelo: o limite e
-    geometrico. Ver `render.sub_shot_regions` e o plano — com `canvas_scale: 2`
-    o quadrante e exatamente nativo em 1080p, e um terco ampliaria 1.5x.
+    geometrico. Ver `canvas_for` e `region_chain` em `filtergraph.py` — com
+    `canvas_scale: 2` o quadrante e exatamente nativo em 1080p, e um terco
+    ampliaria 1.5x.
     """
 
     index: int
     start: float
     end: float
-    region: Literal["full", "top_left", "top_right", "bottom_left", "bottom_right"]
+    region: Region
     direction: str
 
     @property
@@ -466,3 +483,19 @@ class PlannedScript(BaseModel):
     beats: list[ScriptBeat] = Field(
         description="os trechos do roteiro, com id comecando em 1 e sem buraco"
     )
+
+
+class BeatPlacement(BaseModel):
+    """Onde um beat visual caiu na fala real.
+
+    `method` fica gravado porque muda como voce le o resultado: `literal`
+    quer dizer que voce disse aquele trecho como estava escrito; `semantic`
+    que voce parafraseou e o embedding achou o lugar; `unaligned` que a imagem
+    ficou orfa — nao existe um lugar bom para ela, e forcar um seria pior.
+    """
+
+    beat_id: int
+    anchor_offset: int
+    segment: int             # indice no transcript; -1 quando orfao
+    method: Literal["literal", "semantic", "unaligned"]
+    similarity: float
