@@ -217,7 +217,8 @@ def render_text(storyboard: Storyboard, script: Script) -> str:
     total = storyboard.total_screen_seconds
     linhas += [
         "  " + "-" * 72,
-        f"  {storyboard.n_images} imagem{'ns' if storyboard.n_images != 1 else ''} "
+        f"  {storyboard.n_images} "
+        f"{'imagens' if storyboard.n_images != 1 else 'imagem'} "
         f"({sum(b.sub_shots for b in storyboard.beats)} planos), "
         f"{total:.0f}s na tela",
         "",

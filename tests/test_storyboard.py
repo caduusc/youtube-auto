@@ -275,7 +275,7 @@ def test_render_text_mostra_ancora_e_porque(script, render):
     assert "beat 1 — abertura" in saida
     assert "mostrar como monto a esteira" in saida
     assert "porque a abertura precisa do lugar" in saida
-    assert "1 imagem" in saida
+    assert "1 imagem (" in saida
 
 
 def test_normalize():
@@ -296,3 +296,12 @@ def test_ancora_nao_casa_no_meio_de_palavra(script):
 
 def test_ancora_de_uma_palavra_so_funciona(script):
     assert find_anchor("esteira", script.beat(1).text) == 9   # eu=0 ... a=8, esteira=9
+
+
+def test_plural_de_imagem(script, render):
+    """Estava saindo "2 imagemns" no fluxo real."""
+    dois = [beat(script_anchor="Eu gravei"), beat(script_anchor="mostrar como")]
+    saida = render_text(resolve(dois, script, render, input_hash="h"), script)
+    assert "2 imagens (" in saida
+    assert "imagemns" not in saida
+
