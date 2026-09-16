@@ -13,12 +13,14 @@ import json
 import sys
 from pathlib import Path
 
-from . import stages
+from . import approval, stages
 from .config import Config, load_config
 from .log import log
 from .resolver import BudgetExceeded
 from .schemas import EDL, Assets, Manifest, Transcript, TrimPlan
+from .script import ScriptFormatError, read as read_script, spoken_seconds, words
 from .stages.assets import open_bank
+from .storyboard import render_text as render_storyboard
 from .util import read_json
 
 
@@ -256,6 +258,106 @@ def cmd_bank(args, config: Config) -> int:
 
 
 # --------------------------------------------------------------------------
+# roteiro primeiro
+# --------------------------------------------------------------------------
+
+
+def cmd_script(args, config: Config) -> int:
+    """A ideia vira roteiro. Sem gravacao, sem midia."""
+    slug = args.slug or stages.script.slug_for(args.idea)
+    script = stages.script.run(
+        args.idea, slug=slug, target_seconds=args.seconds, config=config,
+    )
+    caminho = config.work_dir / slug / "script.md"
+    falado = spoken_seconds(script, config.script.words_per_minute)
+
+    print()
+    print(f"  {caminho}")
+    print(f"  {len(script.beats)} beats, {words(script)} palavras, "
+          f"~{falado:.0f}s falados (alvo {args.seconds:.0f}s)")
+    print()
+    print("  Revise o arquivo — editar e esperado — e aprove com:")
+    print(f"    pipeline approve script {slug}")
+    print()
+    return 0
+
+
+def cmd_storyboard(args, config: Config) -> int:
+    script = read_script(config.work_dir / args.slug / "script.md")
+    board = stages.storyboard.run(script, config=config)
+    print(render_storyboard(board, script))
+    print("  Revise os conceitos e aprove com:")
+    print(f"    pipeline approve storyboard {args.slug}")
+    print()
+    return 0
+
+
+def cmd_approve(args, config: Config) -> int:
+    """Aprova um portao, gravando O QUE foi aprovado.
+
+    Guardar o digest e o que faz editar depois de aprovar revogar a aprovacao,
+    em vez de o estagio seguinte rodar no texto novo com o aval do antigo.
+    """
+    work = config.work_dir / args.slug
+
+    if args.gate == "script":
+        script = read_script(work / "script.md")
+        approval.grant(work, "script", script.digest())
+        print(f"\n  Roteiro aprovado. Proximo:  pipeline storyboard {args.slug}\n")
+        return 0
+
+    if args.gate == "storyboard":
+        script = read_script(work / "script.md")
+        board = stages.storyboard.run(script, config=config)
+        approval.grant(work, "storyboard", board.input_hash)
+        print(f"\n  Storyboard aprovado ({board.n_images} imagens). "
+              f"Proximo:  pipeline assets {args.slug}\n")
+        return 0
+
+    raise SystemExit(f"portao desconhecido: {args.gate}")
+
+
+def cmd_status(args, config: Config) -> int:
+    """Onde cada video esta. E o que a UI vai mostrar na pagina inicial."""
+    raiz = config.work_dir
+    if not raiz.exists():
+        print("\n  Nenhum video em work/ ainda.\n")
+        return 0
+
+    print()
+    print(f"  {'video':<34} {'roteiro':<12} {'storyboard':<12} {'gravacao'}")
+    print("  " + "-" * 72)
+    for work in sorted(p for p in raiz.iterdir() if p.is_dir()):
+        try:
+            script = read_script(work / "script.md")
+            aprovado = approval.read(work, "script")
+            if aprovado is None:
+                roteiro = "escrito"
+            elif aprovado.matches(script.digest()):
+                roteiro = "aprovado"
+            else:
+                roteiro = "editado!"
+        except ScriptFormatError:
+            roteiro = "-"
+
+        board = work / "storyboard.json"
+        if not board.exists():
+            storyboard = "-"
+        elif approval.read(work, "storyboard") is None:
+            storyboard = "escrito"
+        else:
+            storyboard = "aprovado"
+
+        gravacao = "sim" if (work / "manifest.json").exists() else "-"
+        print(f"  {work.name:<34} {roteiro:<12} {storyboard:<12} {gravacao}")
+    print()
+    print("  'editado!' quer dizer que o arquivo mudou depois de aprovado —")
+    print("  a aprovacao foi revogada e precisa ser dada de novo.")
+    print()
+    return 0
+
+
+# --------------------------------------------------------------------------
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -274,6 +376,22 @@ def build_parser() -> argparse.ArgumentParser:
     for name in stages.ORDER:
         stage_cmd = sub.add_parser(name, help=f"roda o estagio {name} isolado")
         stage_cmd.add_argument("slug")
+
+    script_cmd = sub.add_parser("script", help="escreve o roteiro a partir de uma ideia")
+    script_cmd.add_argument("idea", help="a ideia do video, nas suas palavras")
+    script_cmd.add_argument("--seconds", type=float, default=900.0,
+                            help="duracao alvo falada (default: 900 = 15 min)")
+    script_cmd.add_argument("--slug", help="default: derivado da ideia")
+
+    storyboard_cmd = sub.add_parser("storyboard",
+                                    help="do roteiro aprovado para os beats visuais")
+    storyboard_cmd.add_argument("slug")
+
+    approve_cmd = sub.add_parser("approve", help="aprova um portao")
+    approve_cmd.add_argument("gate", choices=["script", "storyboard"])
+    approve_cmd.add_argument("slug")
+
+    sub.add_parser("status", help="onde cada video esta")
 
     bank_cmd = sub.add_parser("bank", help="banco de assets")
     bank_sub = bank_cmd.add_subparsers(dest="bank_command", required=True)
@@ -300,6 +418,14 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_run(args, config)
         if args.command == "bank":
             return cmd_bank(args, config)
+        if args.command == "script":
+            return cmd_script(args, config)
+        if args.command == "storyboard":
+            return cmd_storyboard(args, config)
+        if args.command == "approve":
+            return cmd_approve(args, config)
+        if args.command == "status":
+            return cmd_status(args, config)
         return cmd_stage(args.command, args.slug, config)
     except KeyboardInterrupt:
         log("interrupted", detail="os artefatos ja escritos continuam validos; rode de novo para retomar")
