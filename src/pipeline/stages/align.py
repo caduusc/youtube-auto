@@ -112,8 +112,10 @@ def run(
     # O portao das imagens: sao elas que custaram dinheiro, e este e o primeiro
     # estagio depois da gravacao — falhar aqui e mais barato que falhar depois
     # de uma hora de encode.
+    # Pelo DIGEST e nao pelo `input_hash`: regerar uma imagem nao muda de
+    # onde o `assets` foi derivado, so o que ele contem. Ver `Assets.digest`.
     approval.require(
-        work, "images", assets.input_hash,
+        work, "images", assets.digest(),
         what="As imagens",
         command=f"pipeline approve images {script.slug}",
     )

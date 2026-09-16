@@ -131,7 +131,7 @@ def images_gate(work: Path) -> Gate:
         return Gate(ABSENT, error=f"assets.json nao pode ser lido: {exc}")
     if not any(item.beat_id >= 0 for item in assets.items):
         return Gate(ABSENT)
-    return _compare(approval.read(work, "images"), assets.input_hash)
+    return _compare(approval.read(work, "images"), assets.digest())
 
 
 def _compare(granted: approval.Approval | None, digest: str) -> Gate:

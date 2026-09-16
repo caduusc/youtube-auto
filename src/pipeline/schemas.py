@@ -336,6 +336,23 @@ class Assets(BaseModel):
     total_cost_usd: float = 0.0
     by_origin: dict[str, int] = Field(default_factory=dict)
 
+    def digest(self) -> str:
+        """O que este `assets` CONTEM, para o portao de aprovacao.
+
+        Diferente de `input_hash`, que e de ONDE ele foi derivado e serve de
+        chave de cache. A distincao passa a importar quando uma imagem e
+        regerada: o storyboard nao mudou, entao `input_hash` fica igual — e
+        uma aprovacao guardada em cima dele cobriria em silencio uma imagem
+        que voce nunca viu. Com o digest do conteudo, regerar revoga a
+        aprovacao sozinho, do mesmo jeito que editar o roteiro revoga a dele.
+        """
+        from .util import text_hash
+
+        return text_hash(
+            self.input_hash,
+            *(f"{i.beat_id}:{i.segment_index}:{i.origin}:{i.path}" for i in self.items),
+        )
+
 
 # --------------------------------------------------------------------------
 # 5. render -> final.mp4 (+ filtergraph.txt, subs.ass)

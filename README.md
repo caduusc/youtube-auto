@@ -252,6 +252,7 @@ uv run pipeline storyboard <slug>
 uv run pipeline approve storyboard <slug>
 uv run pipeline images <slug> --dry-run   # a divisão banco/stock/geração e o custo
 uv run pipeline images <slug>
+uv run pipeline regenerate <slug> 7       # outra imagem para o beat 7 (gasta)
 uv run pipeline approve images <slug>
 #   ... grave o vídeo seguindo o roteiro ...
 uv run pipeline shoot <slug> gravacao.mp4  # do arquivo ao vídeo montado
@@ -276,15 +277,23 @@ dinheiro ser gasto — então eles têm interface:
 uv run pipeline ui                  # http://127.0.0.1:8000
 ```
 
-Três telas: a lista dos vídeos com o estado dos três portões, o roteiro
-renderizado com um campo para editar e aprovar, e o storyboard em um cartão
-por beat — com o trecho da fala ao lado e o âncora destacado dentro dele, que
-é o que responde a única pergunta dessa revisão: *essa imagem entra no ponto
-certo do que eu vou dizer?*
+Quatro telas: a lista dos vídeos com o estado dos três portões, o roteiro
+renderizado com um campo para editar e aprovar, o storyboard em um cartão por
+beat — com o trecho da fala ao lado e o âncora destacado dentro dele, que é o
+que responde a única pergunta dessa revisão (*essa imagem entra no ponto certo
+do que eu vou dizer?*) — e a folha de contato das imagens.
 
-A revisão das imagens é a tela que falta: por enquanto ela é
-`pipeline images <slug>`, que imprime conceito e arquivo lado a lado, e
-`pipeline approve images <slug>`.
+Na folha de contato cada cartão traz a miniatura, o conceito que a pediu, a
+origem, o custo, e **o tamanho da fonte com o fator de ampliação no
+sub-plano** — é ali que você vê se a imagem que saiu errada é o modelo
+ignorando o prompt ou resolução insuficiente. O botão de regerar diz o preço,
+é POST e nunca link: abrir ou recarregar uma tela não pode gastar dinheiro.
+
+Regerar faz três coisas, e as três importam: chama o provider **à força** (sem
+banco nem stock, senão a imagem que você acabou de recusar voltaria com
+similaridade 1.0), **apaga a recusada do banco** (senão o próximo vídeo com
+conceito parecido a reusaria, e em silêncio), e **revoga a aprovação das
+imagens** — você aprovou um conjunto, e este é outro.
 
 A UI **não é dona de estado nenhum**. Toda página lê o disco na hora, todo
 POST escreve no disco, e a aprovação é um arquivo em `work/<slug>/`. Fechar o

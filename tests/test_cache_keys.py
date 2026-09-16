@@ -102,7 +102,9 @@ def test_ordem_das_tags_nao_importa(transcript, config):
 def test_mudar_o_modelo_do_provider_invalida_os_assets(transcript, config):
     edl = edl_of(transcript)
     other = config.model_copy(deep=True)
-    other.image_provider.replicate.model = "black-forest-labs/flux-dev"
+    # Um modelo que o exemplo NAO usa, qualquer que seja o default dele: o
+    # teste mede a chave reagir a troca, nao qual modelo esta configurado.
+    other.image_provider.replicate.model = "outro-lab/outro-modelo"
     assert assets_key(edl, config) != assets_key(edl, other)
 
 
@@ -162,3 +164,25 @@ def test_o_mesmo_transcript_da_o_mesmo_digest(transcript):
     """Estavel entre execucoes: o digest e chave de cache, nao carimbo de
     tempo."""
     assert transcript.digest() == transcript.model_copy(deep=True).digest()
+
+
+def test_mudar_o_input_do_provider_invalida_os_assets(transcript, config):
+    """`guidance`, `num_inference_steps` e `megapixels` mudam a imagem sem
+    mudar o conceito. Sem eles na chave, calibrar aderencia ao prompt nao
+    regeraria nada."""
+    edl = edl_of(transcript)
+    other = config.model_copy(deep=True)
+    other.image_provider.replicate.input = {
+        **config.image_provider.replicate.input, "guidance": 4.5}
+
+    assert assets_key(edl, config) != assets_key(edl, other)
+
+
+def test_a_ordem_do_input_nao_importa(transcript, config):
+    """A chave nao pode depender da ordem em que as chaves aparecem no YAML."""
+    edl = edl_of(transcript)
+    other = config.model_copy(deep=True)
+    other.image_provider.replicate.input = dict(
+        reversed(list(config.image_provider.replicate.input.items())))
+
+    assert assets_key(edl, config) == assets_key(edl, other)

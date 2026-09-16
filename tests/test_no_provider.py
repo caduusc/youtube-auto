@@ -7,6 +7,8 @@ produzir video nessa configuracao, nao morrer.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 import requests
 from conftest import span
@@ -125,3 +127,69 @@ def test_credencial_recusada_aponta_a_variavel(status):
 def test_erro_transitorio_nao_recebe_explicacao_de_conta(status):
     """5xx e 429 sao retentaveis; nao podem virar mensagem de configuracao."""
     assert ReplicateProvider._explain_http_error(make_http_error(status)) is None
+
+
+# --------------------------------------------------------------------------
+# o input do provider vem do config
+# --------------------------------------------------------------------------
+
+
+def test_o_provider_manda_o_input_do_config(config, monkeypatch):
+    """Era um dict fixo no codigo com `num_outputs: 1` dentro, o que tornava
+    "provider plugavel" falso: o flux-1.1-pro recusa `num_outputs`."""
+    cfg = config.model_copy(deep=True)
+    cfg.image_provider.replicate.input = {
+        "aspect_ratio": "1:1", "guidance": 4.5, "megapixels": "1"}
+    monkeypatch.setenv(cfg.image_provider.replicate.env, "token-de-teste")
+
+    enviados = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self): ...
+
+        def json(self):
+            return {"status": "succeeded", "output": ["https://x/y.png"]}
+
+    def fake_post(url, **kwargs):
+        enviados.update(kwargs["json"]["input"])
+        return FakeResponse()
+
+    monkeypatch.setattr("pipeline.providers.requests.post", fake_post)
+    provider = ReplicateProvider(cfg.image_provider.replicate, cfg.network)
+    monkeypatch.setattr("pipeline.providers._download", lambda *a, **k: None)
+    provider.generate("um banco de madeira", Path("/tmp/x.png"))
+
+    assert enviados["aspect_ratio"] == "1:1"
+    assert enviados["guidance"] == 4.5
+    assert "num_outputs" not in enviados, "mandou uma chave que o config nao pediu"
+    assert enviados["prompt"] == "um banco de madeira"
+    assert enviados["output_format"] == cfg.image_provider.replicate.output_format
+
+
+def test_o_config_nao_pode_sobrescrever_o_prompt(config, monkeypatch):
+    """O prompt e do storyboard. Uma chave `prompt` no YAML nao pode
+    substituir o que o modelo escreveu."""
+    cfg = config.model_copy(deep=True)
+    cfg.image_provider.replicate.input = {"prompt": "um gato de chapeu"}
+    monkeypatch.setenv(cfg.image_provider.replicate.env, "token-de-teste")
+
+    enviados = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self): ...
+
+        def json(self):
+            return {"status": "succeeded", "output": ["https://x/y.png"]}
+
+    monkeypatch.setattr(
+        "pipeline.providers.requests.post",
+        lambda url, **kw: (enviados.update(kw["json"]["input"]), FakeResponse())[1])
+    monkeypatch.setattr("pipeline.providers._download", lambda *a, **k: None)
+    ReplicateProvider(cfg.image_provider.replicate, cfg.network).generate(
+        "um banco de madeira", Path("/tmp/x.png"))
+
+    assert enviados["prompt"] == "um banco de madeira"

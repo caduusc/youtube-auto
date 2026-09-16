@@ -125,12 +125,14 @@ class ReplicateProvider:
         response = requests.post(
             f"{self.BASE}/models/{self.config.model}/predictions",
             headers={**self._headers, "Prefer": "wait"},
+            # O config manda o `input` inteiro; o pipeline acrescenta o que e
+            # dele. `prompt` por ultimo de proposito: nenhuma chave do YAML
+            # pode sobrescrever o prompt que o storyboard escreveu.
             json={
                 "input": {
-                    "prompt": prompt,
-                    "aspect_ratio": self.config.aspect_ratio,
+                    **self.config.input,
                     "output_format": self.config.output_format,
-                    "num_outputs": 1,
+                    "prompt": prompt,
                 }
             },
             timeout=self.config.timeout_seconds,

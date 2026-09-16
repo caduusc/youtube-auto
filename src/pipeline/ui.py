@@ -33,12 +33,15 @@ from html import escape
 from pathlib import Path
 
 from fastapi import FastAPI, Form
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 from . import approval, progress
 from .config import Config
-from .schemas import Script, Storyboard, StoryboardBeat
+from .resolver import BudgetExceeded
+from .schemas import AssetItem, Assets, Script, Storyboard, StoryboardBeat
 from .script import ScriptFormatError, parse as parse_script, spoken_seconds, words
+from .stages.images import regenerate as regenerate_image
+from .stages.render import source_size, sub_shots_enabled, upscale_factor
 from .util import read_json
 
 STYLE = """
@@ -91,6 +94,18 @@ button.leve { background: transparent; color: var(--texto); border: 1px solid va
 mark { background: #3c4a2a; color: var(--claro); padding: 0 .15rem; border-radius: 3px; }
 .roteiro { white-space: pre-wrap; font: 14px/1.7 ui-monospace, Menlo, monospace; }
 code { background: var(--fundo); padding: .1rem .35rem; border-radius: 4px; font-size: .9em; }
+.folha { display: grid; grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr)); gap: 1.25rem; }
+.carta { border: 1px solid var(--linha); border-radius: 8px; overflow: hidden; background: var(--fundo); }
+.carta img { display: block; width: 100%; aspect-ratio: 16/9; object-fit: cover; background: var(--painel); }
+.carta .vazio {
+  display: flex; align-items: center; justify-content: center; aspect-ratio: 16/9;
+  color: var(--fraco); font-size: .85rem; background: var(--painel);
+}
+.carta .corpo { padding: .8rem; }
+.carta h3 { margin: 0 0 .4rem; font-size: .95rem; }
+.carta h3 span { color: var(--fraco); font-weight: 400; font-size: .8rem; }
+.carta p { margin: .3rem 0; font-size: .85rem; }
+.carta form { margin-top: .6rem; }
 @media (max-width: 44rem) { .grade { grid-template-columns: 1fr; } }
 """
 
@@ -380,12 +395,143 @@ def create_app(config: Config) -> FastAPI:
             f"<section><p>{board.n_images} "
             f"{'imagens' if board.n_images != 1 else 'imagem'}, {planos} planos, "
             f"{board.total_screen_seconds:.0f}s na tela &nbsp; {badge(gate)} "
-            f'&nbsp; <a href="/{escape(slug)}/script">&larr; roteiro</a></p>'
+            f'&nbsp; <a href="/{escape(slug)}/script">&larr; roteiro</a>'
+            f'&nbsp; <a href="/{escape(slug)}/assets">imagens &rarr;</a></p>'
             f"{_approve_form(slug, 'storyboard', gate)}</section>"
             "<section>"
             + "".join(beat_card(b, script) for b in board.beats)
             + "</section>",
         )
+
+    # ---------------------------------------------------------- imagens
+
+    @app.get("/{slug}/assets/{beat_id}/image")
+    def get_image(slug: str, beat_id: int):
+        """O arquivo da imagem daquele beat.
+
+        Uma rota, e nao um diretorio montado como estatico: so e servido o
+        arquivo que o `assets.json` daquele video aponta, e o caminho e
+        conferido contra o diretorio de imagens antes de abrir. `assets.json` e
+        escrito pelo pipeline e nao por voce, mas servir um caminho de dentro
+        de um arquivo sem conferir e o tipo de coisa que envelhece mal.
+        """
+        work = work_for(config, slug)
+        assets = read_json(work / "assets.json", Assets)
+        item = next((i for i in assets.items if i.beat_id == beat_id), None)
+        if item is None or item.path is None:
+            raise NotFound(f"{slug}/beat {beat_id}")
+
+        raiz = config.path(config.bank.images_dir).resolve()
+        arquivo = config.path(item.path).resolve()
+        if raiz not in arquivo.parents or not arquivo.exists():
+            raise NotFound(item.path)
+        return FileResponse(arquivo)
+
+    def image_card(item: AssetItem, board: Storyboard, slug: str) -> str:
+        beat = next((b for b in board.beats if b.beat_id == item.beat_id), None)
+        planos = (f"{beat.sub_shots} plano{'s' if beat.sub_shots != 1 else ''} "
+                  f"de {beat.seconds_per_shot:g}s" if beat else "")
+
+        if item.path is None:
+            miniatura = '<div class="vazio">cor solida</div>'
+        else:
+            alt = escape(beat.concept if beat else "")
+            miniatura = (f'<img src="/{escape(slug)}/assets/{item.beat_id}/image" '
+                         f'alt="{alt}" loading="lazy">')
+
+        aviso = ""
+        if item.path is not None:
+            largura, altura = source_size(config.path(item.path))
+            if largura <= 0:
+                aviso = ('<p class="erro">arquivo ilegivel — vai virar cor solida '
+                         "no render</p>")
+            else:
+                fator = upscale_factor(
+                    largura, "top_left" if sub_shots_enabled(config.render) else "full",
+                    config.render)
+                classe = "erro" if fator > config.render.upscale_warn_factor else "ausente"
+                aviso = (f'<p class="{classe}">{largura}x{altura}, amplia '
+                         f"{fator:.1f}x no sub-plano</p>")
+
+        # O botao GASTA, entao ele diz o preco e nunca e um link: recarregar a
+        # pagina nao pode gerar imagem.
+        unit = config.image_provider.replicate.cost_usd_per_image
+        regerar = (
+            f'<form method="post" action="/{escape(slug)}/assets/{item.beat_id}/regenerate">'
+            f'<button class="leve" type="submit">Regerar '
+            f"(USD {unit:.3f})</button></form>"
+        )
+
+        nota = f'<p class="ausente">{escape(item.note)}</p>' if item.note else ""
+        custo = f" · USD {item.cost_usd:.3f}" if item.cost_usd else " · sem custo"
+        conceito = escape(beat.concept) if beat else "(beat fora do storyboard)"
+
+        return (
+            f'<div class="carta">{miniatura}<div class="corpo">'
+            f"<h3>beat {item.beat_id} <span>{escape(planos)}</span></h3>"
+            f"<p>{conceito}</p>"
+            f'<p class="ausente">{escape(item.origin)}{custo}</p>'
+            f"{aviso}{nota}{regerar}</div></div>"
+        )
+
+    @app.get("/{slug}/assets", response_class=HTMLResponse)
+    def get_assets(slug: str):
+        work = work_for(config, slug)
+        gate = progress.images_gate(work)
+        titulo = f"imagens · {slug}"
+
+        if gate.state == progress.ABSENT:
+            recado = gate.error or "Este video ainda nao tem imagens."
+            return page(titulo,
+                        f'<section><p class="{"erro" if gate.error else ""}">'
+                        f"{escape(recado)}</p>"
+                        f"<p><code>pipeline images {escape(slug)}</code></p>"
+                        f'<p class="ausente">Esta pagina nao gera imagem: abrir '
+                        f"tela nao pode gastar. O botao de regerar, sim.</p>"
+                        f"</section>")
+
+        assets = read_json(work / "assets.json", Assets)
+        board = read_json(work / "storyboard.json", Storyboard)
+        rate = config.budget.brl_per_usd
+        return page(
+            titulo,
+            f"<section><p>{len(assets.items)} imagens &nbsp; "
+            f"USD {assets.total_cost_usd:.4f} / BRL "
+            f"{assets.total_cost_usd * rate:.2f} &nbsp; {badge(gate)} &nbsp; "
+            f'<a href="/{escape(slug)}/storyboard">&larr; storyboard</a></p>'
+            f"{_approve_form(slug, 'assets', gate)}</section>"
+            '<section><div class="folha">'
+            + "".join(image_card(i, board, slug) for i in assets.items)
+            + "</div></section>",
+        )
+
+    @app.post("/{slug}/assets/{beat_id}/regenerate")
+    def post_regenerate(slug: str, beat_id: int):
+        """Gera uma imagem nova para aquele beat. GASTA.
+
+        POST e nao GET porque recarregar a pagina nao pode custar dinheiro, e
+        redireciona depois para o recarregar tambem nao repetir o POST.
+        """
+        work = work_for(config, slug)
+        script = parse_script((work / "script.md").read_text(encoding="utf-8"))
+        board = read_json(work / "storyboard.json", Storyboard)
+        assets = read_json(work / "assets.json", Assets)
+
+        try:
+            regenerate_image(script, board, assets, beat_id, config)
+        except (BudgetExceeded, RuntimeError, ValueError) as exc:
+            return page(f"imagens · {slug}",
+                        f'<section><p class="erro">{escape(str(exc))}</p>'
+                        f'<p><a href="/{escape(slug)}/assets">&larr; voltar</a></p>'
+                        f"</section>")
+        return RedirectResponse(f"/{slug}/assets", status_code=303)
+
+    @app.post("/{slug}/assets/approve")
+    def approve_assets(slug: str):
+        work = work_for(config, slug)
+        assets = read_json(work / "assets.json", Assets)
+        approval.grant(work, "images", assets.digest())
+        return RedirectResponse(f"/{slug}/assets", status_code=303)
 
     @app.post("/{slug}/storyboard/approve")
     def approve_storyboard(slug: str):

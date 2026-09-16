@@ -120,7 +120,7 @@ def cenario(cfg):
     write_json(work / "storyboard.json", board)
     write_json(work / "assets.json", assets)
     approval.grant(work, "storyboard", board.input_hash)
-    approval.grant(work, "images", assets.input_hash)
+    approval.grant(work, "images", assets.digest())
     return script, board, transcript, assets, work
 
 
@@ -207,7 +207,7 @@ def test_sem_beat_alinhado_a_edl_e_um_aroll_so(cfg, monkeypatch):
     work = cfg.work_dir / script.slug
     work.mkdir(parents=True)
     write_json(work / "assets.json", assets)
-    approval.grant(work, "images", assets.input_hash)
+    approval.grant(work, "images", assets.digest())
     sem_torch(monkeypatch)
 
     rigido = cfg.model_copy(deep=True)
@@ -266,7 +266,7 @@ def test_beat_orfao_fica_marcado_em_vez_de_silencioso(cfg, monkeypatch):
     work = cfg.work_dir / script.slug
     work.mkdir(parents=True)
     write_json(work / "assets.json", assets)
-    approval.grant(work, "images", assets.input_hash)
+    approval.grant(work, "images", assets.digest())
     sem_torch(monkeypatch)
 
     rigido = cfg.model_copy(deep=True)
@@ -430,7 +430,7 @@ def test_o_relatorio_mostra_a_faixa_e_nao_so_o_ancora(cfg):
     work = cfg.work_dir / script.slug
     work.mkdir(parents=True)
     write_json(work / "assets.json", assets)
-    approval.grant(work, "images", assets.input_hash)
+    approval.grant(work, "images", assets.digest())
 
     align.run(script, board, um_transcript(), assets, cfg)
     relatorio = read_json(work / "align.json", Placements)

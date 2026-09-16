@@ -82,6 +82,11 @@ def provider_key(config: Config) -> tuple[object, ...]:
         ",".join(sorted(config.stock.generic_tags)),
         config.image_provider.active,
         config.image_provider.replicate.model,
+        # O `input` do provider entra porque e onde moram os knobs que mudam a
+        # imagem sem mudar o conceito — `guidance`, `num_inference_steps`,
+        # `megapixels`. Ordenado para o hash nao depender da ordem do YAML.
+        ";".join(f"{k}={v}" for k, v in sorted(
+            config.image_provider.replicate.input.items())),
     )
 
 
